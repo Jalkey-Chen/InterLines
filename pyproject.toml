@@ -12,6 +12,7 @@ scripts = { interlines = "interlines.cli:main", "interlines-api" = "interlines.a
 dependencies = [
   "pydantic>=2.8.0",
   "pydantic-settings>=2.2.1",
+  "requests>=2.32.5",
 ]
 
 [tool.uv]
