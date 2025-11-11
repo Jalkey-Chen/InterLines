@@ -1,7 +1,9 @@
-"""Minimal smoke tests to keep CI meaningful at Step 0.1.
+"""Minimal smoke tests kept from Step 0.1, updated for the Step 0.4 CLI.
 
-These tests ensure the package imports correctly and that the CLI entry point
-returns a zero exit code. They serve as a sanity check for the CI pipeline.
+What changed
+------------
+The CLI now requires a subcommand. We therefore call `main(["version"])`
+instead of `main([])` and keep the import sanity check for the package.
 """
 
 from __future__ import annotations
@@ -16,6 +18,6 @@ def test_package_imports() -> None:
 
 
 def test_cli_main_returns_zero() -> None:
-    """Ensure the CLI entry point returns 0 (success) in the stub phase."""
+    """Ensure the CLI entry point returns 0 when given a valid subcommand."""
     cli = importlib.import_module("interlines.cli")
-    assert cli.main([]) == 0
+    assert cli.main(["version"]) == 0
