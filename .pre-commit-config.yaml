@@ -18,6 +18,7 @@ repos:
           - pydantic-settings>=2.2.1
           - fastapi>=0.115.0
           - requests>=2.32.0
+          - uvicorn>=0.30.0
         args:
           - --strict
           - --python-version=3.11
