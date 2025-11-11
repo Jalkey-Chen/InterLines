@@ -10,6 +10,7 @@ scripts = { interlines = "interlines.cli:main", "interlines-api" = "interlines.a
 
 # NEW in Step 0.2: runtime dependencies for typed settings
 dependencies = [
+  "httpx>=0.28.1",
   "pydantic>=2.8.0",
   "pydantic-settings>=2.2.1",
   "requests>=2.32.5",
