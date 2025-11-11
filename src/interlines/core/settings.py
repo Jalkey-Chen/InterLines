@@ -73,12 +73,32 @@ def load_settings() -> Settings:
     return Settings()
 
 
-# Export a ready-to-use singleton (import-time read of env / .env files).
+# Keep a convenient module-level reference for general use; tests may still import it.
 settings: Settings = load_settings()
 
 
 def get_logger(name: str = "interlines") -> logging.Logger:
-    """Return a process-global logger configured to `settings.log_level`."""
+    """Return a process-global logger configured to the *current* `LOG_LEVEL`.
+
+    Implementation notes
+    --------------------
+    - Reads the latest config via `load_settings()` on every call. This ensures that
+      tests (or other code) that mutate env variables and then call
+      `load_settings.cache_clear()` will see logger levels updated immediately.
+    - Creates a single `StreamHandler` if none exist; otherwise reuses existing handlers.
+    - Disables propagation to avoid duplicate logs when root is configured elsewhere.
+
+    Parameters
+    ----------
+    name : str
+        Logger name; default is "interlines".
+
+    Returns
+    -------
+    logging.Logger
+        A logger whose level matches the current settings.
+    """
+    cfg = load_settings()
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler()
@@ -86,6 +106,6 @@ def get_logger(name: str = "interlines") -> logging.Logger:
             logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
         )
         logger.addHandler(handler)
-    logger.setLevel(settings.log_level_numeric())
+    logger.setLevel(cfg.log_level_numeric())
     logger.propagate = False
     return logger
