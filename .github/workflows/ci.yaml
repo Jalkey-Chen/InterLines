@@ -1,16 +1,45 @@
-name: CI
-on: [push, pull_request]
+name: CI (uv • ruff • mypy • pytest)
+
+on:
+  push:
+    branches: [ dev, main, "feature/**", "chore/**", "fix/**" ]
+  pull_request:
+    branches: [ dev, main ]
+
 jobs:
-  test:
+  build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - name: Sync
-        run: uv sync --all-extras
-      - name: Ruff
-        run: uv run ruff check .
-      - name: Mypy
-        run: uv run mypy src
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          pipx install uv
+
+      - name: Sync deps (all groups)
+        run: |
+          uv sync --all-groups
+
+      - name: Ruff (lint)
+        run: |
+          uv run ruff check .
+
+      - name: Ruff (format check)
+        run: |
+          uv run ruff format --check .
+
+      - name: Mypy (type-check)
+        run: |
+          uv run mypy src
+
       - name: Pytest
-        run: uv run pytest --cov=src --cov-report=term-missing
+        run: |
+          uv run pytest -q
