@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+artifacts/
+logs/
+uv.lock.backup
+.DS_Store
