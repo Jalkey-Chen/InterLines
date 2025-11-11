@@ -1,3 +1,5 @@
+# Pre-commit configuration for linting and formatting.
+# Install: `uv tool run pre-commit install`
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.8
@@ -10,7 +12,10 @@ repos:
     rev: v1.10.0
     hooks:
       - id: mypy
-        additional_dependencies: []
+        # Ensure mypy's isolated env has the same runtime deps needed for typing
+        additional_dependencies:
+          - pydantic>=2.8.0
+          - pydantic-settings>=2.2.1
         args:
           - --strict
           - --python-version=3.11
