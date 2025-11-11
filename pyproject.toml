@@ -8,6 +8,12 @@ authors = [{ name = "InterLines Team" }]
 license = { text = "GNU GPL" }
 scripts = { interlines = "interlines.cli:main", "interlines-api" = "interlines.api.server:run" }
 
+# NEW in Step 0.2: runtime dependencies for typed settings
+dependencies = [
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.2.1",
+]
+
 [tool.uv]
 # Install as editable for local development
 package = true
