@@ -38,24 +38,7 @@ from .app import get_app
 
 
 def _bool_from_env(name: str, default: bool) -> bool:
-    """Parse a boolean-like environment variable.
-
-    Accepts common truthy/falsey forms (case-insensitive):
-    - True: "1", "true", "yes", "on"
-    - False: "0", "false", "no", "off"
-
-    Parameters
-    ----------
-    name : str
-        Environment variable name to read.
-    default : bool
-        Fallback value when variable is absent or unparsable.
-
-    Returns
-    -------
-    bool
-        Parsed boolean or the provided default.
-    """
+    """Parse a boolean-like environment variable with sensible defaults."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -81,31 +64,23 @@ def run(
     port : Optional[int], default None
         Bind port. If None, falls back to `API_PORT` or `8000`.
     reload : Optional[bool], default None
-        Uvicorn's auto-reload. If None, uses `API_RELOAD` or `settings.is_dev`.
-
-    Notes
-    -----
-    - We refresh settings via `load_settings()` at call time so that changes to env
-      made by tests or orchestration are honored.
-    - We avoid global app instances here and build the app via `get_app()` to keep
-      future test isolation straightforward.
+        Auto-reload. If None, uses `API_RELOAD` env var or `settings.is_dev`.
     """
     settings = load_settings()
     log = get_logger("interlines.api.server")
 
-    # --- Resolve host (ensure concrete str for mypy) -------------------------
-    # Use os.environ.get + "or" to produce a concrete str, then annotate.
-    env_host = os.environ.get("API_HOST")  # Optional[str]
+    # --- Resolve host (concrete str for typing) --------------------------------
+    env_host = os.environ.get("API_HOST")
     bind_host: str = host if host is not None else (env_host or "127.0.0.1")
 
-    # --- Resolve port (ensure concrete int for mypy) -------------------------
+    # --- Resolve port (concrete int for typing) --------------------------------
     if port is not None:
         bind_port: int = port
     else:
-        env_port = os.environ.get("API_PORT")  # Optional[str]
+        env_port = os.environ.get("API_PORT")
         bind_port = int(env_port) if (env_port is not None and env_port.isdigit()) else 8000
 
-    # --- Resolve reload (ensure concrete bool for mypy) ----------------------
+    # --- Resolve reload (concrete bool for typing) -----------------------------
     if reload is not None:
         use_reload: bool = reload
     else:
@@ -119,13 +94,25 @@ def run(
         settings.log_level,
     )
 
-    uvicorn.run(
-        app=get_app(),
-        host=bind_host,
-        port=bind_port,
-        reload=use_reload,
-        log_level=settings.log_level.lower(),
-    )
+    if use_reload:
+        # IMPORTANT: pass import string + factory=True for uvicorn auto-reload
+        uvicorn.run(
+            "interlines.api.app:get_app",
+            factory=True,
+            host=bind_host,
+            port=bind_port,
+            reload=True,
+            log_level=settings.log_level.lower(),
+        )
+    else:
+        # No reload: pass the concrete ASGI app instance
+        uvicorn.run(
+            app=get_app(),
+            host=bind_host,
+            port=bind_port,
+            reload=False,
+            log_level=settings.log_level.lower(),
+        )
 
 
 if __name__ == "__main__":
