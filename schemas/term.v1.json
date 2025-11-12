@@ -1,0 +1,29 @@
+{
+  "title": "TermCard",
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string" },
+    "version": { "type": "string" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "provenance": { "type": "array", "items": { "$ref": "#/$defs/Provenance" } },
+    "term": { "type": "string" },
+    "definition": { "type": "string" },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "examples": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["kind", "version", "confidence", "term", "definition"],
+  "$defs": {
+    "Provenance": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "locator": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "note": { "type": ["string", "null"] }
+      },
+      "required": ["source", "created_at"]
+    }
+  }
+}
