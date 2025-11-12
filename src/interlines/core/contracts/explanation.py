@@ -15,22 +15,7 @@ class EvidenceItem(BaseModel):
 
 
 class ExplanationCard(Artifact):
-    """A compact explanation of a claim with evidence and rationale.
-
-    Fields
-    ------
-    claim : str
-        The central statement being explained/justified.
-    rationale : str
-        Coherent reasoning supporting why the claim holds.
-    evidence : list[EvidenceItem]
-        Optional supporting items referencing sources or earlier derivations.
-    summary : Optional[str]
-        A one- or two-sentence TL;DR of the explanation.
-    """
-
-    kind: str = Field(default="explanation.v1", description="Artifact kind tag")
-    version: str = Field(default="1.0.0", description="Explanation schema version")
+    """A compact explanation of a claim with evidence and rationale."""
 
     claim: str
     rationale: str

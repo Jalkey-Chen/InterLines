@@ -12,9 +12,6 @@ from .artifact import Artifact
 class TimelineEvent(Artifact):
     """A single event on a timeline with optional tags and sources."""
 
-    kind: str = Field(default="timeline_event.v1")
-    version: str = Field(default="1.0.0")
-
     when: date | datetime = Field(description="Date/time of the event")
     title: str
     description: str | None = Field(default=None)

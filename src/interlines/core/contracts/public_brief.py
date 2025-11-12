@@ -18,9 +18,6 @@ class BriefSection(BaseModel):
 class PublicBrief(Artifact):
     """A structured brief with a title, summary, and sections."""
 
-    kind: str = Field(default="public_brief.v1")
-    version: str = Field(default="1.0.0")
-
     title: str
     summary: str
     sections: list[BriefSection] = Field(default_factory=list)

@@ -8,24 +8,7 @@ from .artifact import Artifact
 
 
 class TermCard(Artifact):
-    """A defined term used across InterLines content.
-
-    Fields
-    ------
-    term : str
-        The canonical term (lower snake/camel/kebab allowed).
-    definition : str
-        A concise, plain-language definition.
-    aliases : list[str]
-        Optional alternate spellings or synonyms.
-    examples : list[str]
-        Short usage or illustrative examples.
-    sources : list[str]
-        Citations or URLs that ground the definition.
-    """
-
-    kind: str = Field(default="term.v1")
-    version: str = Field(default="1.0.0")
+    """A defined term used across InterLines content."""
 
     term: str
     definition: str

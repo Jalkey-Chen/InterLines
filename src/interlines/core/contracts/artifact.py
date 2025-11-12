@@ -44,24 +44,10 @@ Semver = Annotated[
 
 
 class Provenance(BaseModel):
-    """Traceability metadata indicating where an artifact element came from.
-
-    Attributes
-    ----------
-    source : Literal["user","web","pdf","dataset","model","other"]
-        High-level origin category.
-    locator : Optional[HttpUrl | str]
-        A URL or any opaque locator (e.g., file path, DOI, chunk-id).
-    model : Optional[str]
-        If produced by a model/agent, its identifier (e.g., 'gpt-4o-mini-2025-05-xx').
-    created_at : datetime
-        UTC timestamp when this fragment was created/observed.
-    note : Optional[str]
-        Freeform explanation (e.g., prompt, heuristic).
-    """
+    """Traceability metadata indicating where an artifact element came from."""
 
     source: Literal["user", "web", "pdf", "dataset", "model", "other"] = Field(
-        default="other", description="High-level origin category."
+        description="High-level origin category."
     )
     locator: str | HttpUrl | None = Field(default=None, description="URL or opaque locator")
     model: str | None = Field(default=None, description="Producer model/agent id, if any")
@@ -73,23 +59,13 @@ class Provenance(BaseModel):
 
 
 class Artifact(BaseModel):
-    """Base envelope embedded by all content contracts.
+    """Base envelope embedded by all content contracts."""
 
-    Attributes
-    ----------
-    kind : str
-        A short machine-readable type label (e.g., "explanation.v1", "term.v1").
-    version : Semver
-        Schema version of this artifact contract (semantic).
-    confidence : Confidence
-        Calibrated score in [0, 1].
-    provenance : list[Provenance]
-        Traceability information (may be empty).
-    """
-
+    # REQUIRED (no defaults) to match schemas/*.json
     kind: str = Field(description="Short machine label, e.g. 'explanation.v1'")
     version: Semver = Field(description="Schema version (semver)")
-    confidence: Confidence = Field(default=0.5, description="Calibrated score in [0,1]")
+    confidence: Confidence = Field(description="Calibrated score in [0,1]")
+
     provenance: list[Provenance] = Field(default_factory=list, description="Traceability entries")
 
     @field_validator("kind")
