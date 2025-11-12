@@ -10,13 +10,17 @@ from .artifact import Artifact
 
 
 class RelevanceNote(Artifact):
-    """A scored note explaining why something is relevant."""
+    """A scored note explaining why something is relevant.
+
+    Required fields (per JSON schema):
+    - kind, version, confidence (from Artifact)
+    - target, rationale, score (defined here)
+    """
 
     target: str = Field(description="What this note is about (id/ref/label)")
     rationale: str = Field(description="Why the target is relevant now")
-    score: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
-        default=0.5, description="Relevance score in [0,1]"
-    )
-
-
-__all__ = ["RelevanceNote"]
+    # Required: no default -> appears in JSON Schema "required"
+    score: Annotated[
+        float,
+        Field(ge=0.0, le=1.0, description="Relevance score in [0,1]"),
+    ]
