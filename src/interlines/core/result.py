@@ -32,6 +32,9 @@ T = TypeVar("T")
 U = TypeVar("U")
 E = TypeVar("E")
 F = TypeVar("F")
+T2 = TypeVar("T2")
+
+_MISSING = object()
 
 
 class Result(Generic[T, E]):
@@ -50,9 +53,9 @@ class Result(Generic[T, E]):
     @overload
     def unwrap(self) -> T: ...
     @overload
-    def unwrap(self, default: T) -> T: ...
+    def unwrap(self, default: U) -> T | U: ...
 
-    def unwrap(self, default: T | None = None) -> T:
+    def unwrap(self, default: object = _MISSING) -> object:
         """Return the inner value if ``Ok``, else raise or return ``default``.
 
         Parameters
@@ -64,7 +67,7 @@ class Result(Generic[T, E]):
         if isinstance(self, Ok):
             # Cast to narrow `self` so mypy knows `.value` is `T`
             return cast(Ok[T, E], self).value
-        if default is not None:
+        if default is not _MISSING:
             return default
         raise RuntimeError(f"Attempted to unwrap Err: {self!r}")
 
@@ -101,15 +104,28 @@ class Result(Generic[T, E]):
         return cast(Result[U, E], self)
 
     # ----- Utilities ---------------------------------------------------------
-    def or_else(self, fallback: Callable[[E], Result[T, E]]) -> Result[T, E]:
-        """If ``Err``, call ``fallback(err)``; otherwise return ``self``."""
-        if isinstance(self, Err):
-            return fallback(cast(Err[T, E], self).error)
-        return self
+    def or_else(self, fallback: Callable[[E], Result[T2, E]]) -> Result[T | T2, E]:
+        """If ``Err``, call ``fallback(err)``; otherwise return ``self``.
 
-    def get_or(self, default: T) -> T:
+        The success type may widen from ``T`` to ``T|T2``. When ``self`` is an
+        ``Err[Never, E]`` (common at call sites like ``err("x")``), mypy reduces
+        ``Never|T2`` to ``T2``, so callers get a precise success type.
+
+        Notes
+        -----
+        - Generics are invariant in mypy. That means a value of type
+          ``Result[T2, E]`` is **not** a subtype of ``Result[T|T2, E]``.
+          We therefore explicitly cast the fallback result to the widened type.
+        """
+        if isinstance(self, Err):
+            fb: Result[T2, E] = fallback(cast(Err[T, E], self).error)
+            return cast("Result[T | T2, E]", fb)
+        return cast("Result[T | T2, E]", self)
+
+    def get_or(self, default: U) -> T | U:
         """Return the success value or a default if ``Err``."""
-        return self.unwrap(default)
+        # Overload ensures callers see `T | U`. Implementation can cast.
+        return cast("T | U", self.unwrap(default))
 
     # ----- Dunder helpers ----------------------------------------------------
     def __repr__(self) -> str:  # pragma: no cover - trivial representation
