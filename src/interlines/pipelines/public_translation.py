@@ -6,7 +6,7 @@ pipeline for a single, simple use case:
 
     raw text  →  parsed_chunks  →  explanation cards  →  public brief (stub)
 
-At this stage, everything is still synchronous and in-process. The goal is to
+At this stage, everything is synchronous and in-process. The goal is to
 provide a clean, testable orchestration function that other entry points
 (e.g., CLI `interlines interpret`, HTTP API handlers) can call.
 
@@ -50,9 +50,9 @@ from interlines.core.blackboard.memory import Blackboard
 class PublicBriefPayload(TypedDict):
     """JSON-safe stub payload representing a public brief.
 
-    Fields roughly mirror the future `PublicBrief` contract but are intentionally
-    minimal here to keep the pipeline focused on data flow rather than schema
-    details.
+    Fields roughly mirror the future `PublicBrief` contract but are
+    intentionally minimal here to keep the pipeline focused on data flow
+    rather than schema details.
     """
 
     kind: str
