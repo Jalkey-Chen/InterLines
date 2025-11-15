@@ -1,3 +1,0 @@
-- M0: Contracts + Blackboard + Minimal pipeline
-- M1: Public translation + History
-- M2: Eval + Export + Replay
