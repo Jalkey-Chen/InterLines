@@ -1,0 +1,65 @@
+version: "3.9"
+
+x-common-env: &common-env
+  INTERLINES_ENV: production
+  LOG_LEVEL: INFO
+  PYTHONPATH: /app/src
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  INTERLINES_ENABLE_HISTORY: ${INTERLINES_ENABLE_HISTORY:-true}
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: interlines:latest
+    container_name: interlines-api
+    env_file: [.env]
+    environment: *common-env
+    command: ["uv","run","interlines-api"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD","curl","-f","http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles: ["api"]
+
+  ui:
+    image: interlines:latest
+    container_name: interlines-ui
+    env_file: [.env]
+    environment: *common-env
+    command: ["uv","run","interlines-ui"]
+    ports: ["8501:8501"]
+    volumes:
+      - ./artifacts:/app/artifacts
+    depends_on: [api]
+    restart: unless-stopped
+    profiles: ["ui"]
+
+  api-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: interlines-gpu:latest
+    container_name: interlines-api-gpu
+    env_file: [.env]
+    environment: *common-env
+    command: ["uv","run","interlines-api"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+    restart: unless-stopped
+    profiles: ["gpu"]
