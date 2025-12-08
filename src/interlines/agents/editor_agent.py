@@ -18,9 +18,16 @@ Responsibilities (commit 1)
 - Build a :class:`ReviewReport` with numeric criteria and free-form
   comments describing any issues that should be fixed.
 
-Later commits will extend this agent to:
-- Mark missing provenance explicitly.
-- Integrate more advanced factuality/bias checks if needed.
+Additional responsibilities (commit 2: mark missing provenance)
+----------------------------------------------------------------
+- Scan explanations, glossary terms, and timeline events for missing
+  provenance:
+  * ExplanationCard with empty evidence or evidence without sources.
+  * TermCard with an empty ``sources`` list.
+  * TimelineEvent with an empty ``sources`` list.
+- For each such case, append a structured comment and add a matching
+  action entry to :class:`ReviewReport.actions` so that downstream
+  tooling or human editors can perform targeted fixes.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from interlines.core.contracts.explanation import ExplanationCard
 from interlines.core.contracts.relevance import RelevanceNote
 from interlines.core.contracts.review import ReviewCriteria, ReviewReport
 from interlines.core.contracts.term import TermCard
+from interlines.core.contracts.timeline import TimelineEvent
 from interlines.core.evals.readability import aggregate_readability
 from interlines.core.result import Result, ok
 
@@ -40,6 +48,7 @@ _EXPLANATIONS_KEY = "explanations"
 _RELEVANCE_NOTES_KEY = "relevance_notes"
 _TERMS_KEY = "terms"
 _EVOLUTION_NARRATIVE_KEY = "evolution_narrative"
+_TIMELINE_EVENTS_KEY = "timeline_events"
 _REVIEW_REPORT_KEY = "review_report"
 
 
@@ -171,6 +180,120 @@ def _collect_narrative_segment(bb: Blackboard) -> tuple[list[str], list[str]]:
     return segments, comments
 
 
+def _missing_provenance_explanations(bb: Blackboard) -> tuple[list[str], list[str]]:
+    """Find explanation cards with missing provenance."""
+    comments: list[str] = []
+    actions: list[str] = []
+
+    explanations_raw = _as_list(bb.get(_EXPLANATIONS_KEY))
+    for idx, item in enumerate(explanations_raw):
+        if not isinstance(item, ExplanationCard):
+            continue
+
+        if not item.evidence:
+            msg = (
+                f"[provenance] Explanation[{idx}] ('{item.claim[:40]}...') "
+                "has no evidence items. Add at least one EvidenceItem "
+                "with a supporting quote and source."
+            )
+            comments.append(msg)
+            actions.append(
+                f"Add evidence with paragraph/source IDs to explanation[{idx}].",
+            )
+            continue
+
+        has_source = any(ev.source is not None and ev.source.strip() for ev in item.evidence)
+        if not has_source:
+            msg = (
+                f"[provenance] Explanation[{idx}] ('{item.claim[:40]}...') "
+                "has evidence items but none of them specify a source. "
+                "Attach paragraph IDs, citations, or URLs."
+            )
+            comments.append(msg)
+            actions.append(
+                f"Attach sources to evidence items in explanation[{idx}].",
+            )
+
+    return comments, actions
+
+
+def _missing_provenance_terms(bb: Blackboard) -> tuple[list[str], list[str]]:
+    """Find glossary terms that do not have any sources attached."""
+    comments: list[str] = []
+    actions: list[str] = []
+
+    terms_raw = _as_list(bb.get(_TERMS_KEY))
+    for idx, item in enumerate(terms_raw):
+        if not isinstance(item, TermCard):
+            continue
+        if not item.sources:
+            msg = (
+                f"[provenance] Term[{idx}] '{item.term}' has an empty sources "
+                "list. Link to the paragraphs, documents, or datasets that "
+                "support this definition."
+            )
+            comments.append(msg)
+            actions.append(
+                f"Add sources for term '{item.term}' in the glossary.",
+            )
+
+    return comments, actions
+
+
+def _missing_provenance_timeline(bb: Blackboard) -> tuple[list[str], list[str]]:
+    """Find timeline events without sources attached."""
+    comments: list[str] = []
+    actions: list[str] = []
+
+    events_raw = _as_list(bb.get(_TIMELINE_EVENTS_KEY))
+    for idx, item in enumerate(events_raw):
+        if not isinstance(item, TimelineEvent):
+            continue
+        if not item.sources:
+            msg = (
+                f"[provenance] TimelineEvent[{idx}] '{item.title}' has no "
+                "sources. Confirm the date and description, then attach "
+                "supporting references."
+            )
+            comments.append(msg)
+            actions.append(
+                f"Review and add sources for timeline event '{item.title}'.",
+            )
+
+    return comments, actions
+
+
+def _find_missing_provenance(bb: Blackboard) -> tuple[list[str], list[str]]:
+    """Identify artifacts that lack provenance and return comments/actions.
+
+    The editor does not attempt to *fix* provenance, it only marks where
+    it is missing so that downstream tools or human editors can perform
+    targeted revisions.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        ``(comments, actions)`` where each element is a list of strings
+        describing a missing-provenance issue and a suggested fix.
+    """
+    comments: list[str] = []
+    actions: list[str] = []
+
+    exp_comments, exp_actions = _missing_provenance_explanations(bb)
+    term_comments, term_actions = _missing_provenance_terms(bb)
+    timeline_comments, timeline_actions = _missing_provenance_timeline(bb)
+
+    comments.extend(exp_comments)
+    comments.extend(term_comments)
+    comments.extend(timeline_comments)
+
+    actions.extend(exp_actions)
+    actions.extend(term_actions)
+    actions.extend(timeline_actions)
+
+    return comments, actions
+
+
 def _score_criteria(
     *,
     readability: float,
@@ -227,8 +350,10 @@ def run_editor(bb: Blackboard) -> Result[ReviewReport, str]:
     2. Compute a readability score from all segments.
     3. Construct :class:`ReviewCriteria` based on readability and the
        presence/absence of core artifact types.
-    4. Aggregate an overall score as the average of the four criteria.
-    5. Store the :class:`ReviewReport` under ``"review_report"`` on the
+    4. Scan for missing provenance on explanations, terms, and timeline
+       events and turn these into comments/actions.
+    5. Aggregate an overall score as the average of the four criteria.
+    6. Store the :class:`ReviewReport` under ``"review_report"`` on the
        blackboard and return it.
 
     Parameters
@@ -272,6 +397,10 @@ def run_editor(bb: Blackboard) -> Result[ReviewReport, str]:
     # Overall is the simple mean of the four criteria dimensions.
     overall = (criteria.accuracy + criteria.clarity + criteria.completeness + criteria.safety) / 4.0
 
+    # Provenance-specific issues and suggested actions.
+    provenance_comments, provenance_actions = _find_missing_provenance(bb)
+    comments.extend(provenance_comments)
+
     # Add a short summary comment about readability.
     comments.append(
         f"[readability] Aggregate readability score: {readability:.2f} in [0,1].",
@@ -284,7 +413,7 @@ def run_editor(bb: Blackboard) -> Result[ReviewReport, str]:
         overall=overall,
         criteria=criteria,
         comments=comments,
-        actions=[],
+        actions=provenance_actions,
     )
 
     bb.put(_REVIEW_REPORT_KEY, report)
