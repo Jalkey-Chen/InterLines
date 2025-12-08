@@ -322,15 +322,52 @@ def run_explainer(bb: Blackboard) -> Result[list[ExplanationCard], str]:
     return ok(cards)
 
 
-def run_explainer_stub(bb: Blackboard) -> Result[list[ExplanationCard], str]:
+def run_explainer_stub(
+    bb: Blackboard,
+    *,
+    source_key: str = _PARSED_CHUNKS_KEY,
+    target_key: str = _EXPLANATIONS_KEY,
+) -> list[dict[str, Any]]:
     """Backward-compatible wrapper around :func:`run_explainer`.
 
-    Historically the explainer agent exposed a ``run_explainer_stub`` function
-    during the stub phase. We keep this thin alias so that existing pipeline
-    code importing the stub name continues to work while the underlying
-    implementation is upgraded to the real LLM-backed explainer.
+    This function preserves the historical stub signature used by the
+    public-translation pipeline::
+
+        explanation_cards = run_explainer_stub(
+            blackboard,
+            source_key="parsed_chunks",
+            target_key="explanations",
+        )
+
+    For compatibility, the keyword arguments are accepted but currently
+    ignored, because :func:`run_explainer` always reads from and writes to
+    the internal default keys. In the future we could thread these keys
+    through if we want more flexibility.
+
+    The function:
+
+    1. Delegates to :func:`run_explainer`.
+    2. Raises :class:`RuntimeError` if the underlying Result is an error.
+    3. Converts the returned :class:`ExplanationCard` objects into plain
+       ``dict`` values via :meth:`model_dump`, suitable for JSON serialisation.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        JSON-like representation of all explanation cards.
     """
-    return run_explainer(bb)
+    # NOTE: `source_key` and `target_key` are intentionally unused for now.
+    # They are kept to avoid breaking existing pipeline code and type hints.
+    _ = source_key
+    _ = target_key
+
+    result = run_explainer(bb)
+    if result.is_err():
+        # Fail fast for the stub path rather than silently returning garbage.
+        raise RuntimeError(f"run_explainer_stub error: {result}")
+
+    cards = result.unwrap()
+    return [card.model_dump() for card in cards]
 
 
 __all__ = [
