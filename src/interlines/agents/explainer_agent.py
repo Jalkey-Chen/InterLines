@@ -24,7 +24,7 @@ Responsibilities
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.contracts.explanation import EvidenceItem, ExplanationCard
@@ -325,6 +325,102 @@ def run_explainer(bb: Blackboard) -> Result[list[ExplanationCard], str]:
     return ok(cards)
 
 
+def _build_stub_cards_from_parsed(
+    parsed_chunks: Sequence[Mapping[str, Any]],
+) -> list[ExplanationCard]:
+    """Build simple offline ExplanationCard stubs from parsed paragraphs.
+
+    This helper is used when the real LLM explainer cannot be called
+    (for example, when API keys are missing in CI). It looks at the
+    paragraphs produced by the parser and synthesizes three explanation
+    layers:
+
+    - a one-sentence style card based on the first paragraph
+    - a short multi-paragraph style card based on all paragraphs
+    - a deeper stub card that echoes the full text
+
+    The goal is *shape compatibility* with the real explainer: the
+    returned cards use the same Pydantic contract, including
+    ``kind``, ``version`` and ``confidence``, so that downstream
+    components (pipeline, brief builder) behave identically in tests.
+    """
+    texts: list[str] = []
+    ids: list[str] = []
+
+    for chunk in parsed_chunks:
+        text_raw = chunk.get("text") or ""
+        text = str(text_raw).strip()
+        if not text:
+            continue
+
+        texts.append(text)
+
+        cid = chunk.get("id")
+        if cid is not None:
+            ids.append(str(cid))
+
+    all_text = " ".join(texts)
+    first_para = texts[0] if texts else ""
+    provenance_label = f"paragraphs: {', '.join(ids)}" if ids else None
+
+    def make_card(claim: str, rationale: str) -> ExplanationCard:
+        """Create a canonical ExplanationCard for stub usage.
+
+        We pin:
+        - kind      = "explanation.v1"   (schema ID)
+        - version   = "1.0.0"            (semver as required by the base Artifact)
+        - confidence= 0.5                (neutral default)
+        """
+        evidence_items = [
+            EvidenceItem(
+                text=claim,
+                source=provenance_label,
+            )
+        ]
+        return ExplanationCard(
+            kind="explanation.v1",
+            version="1.0.0",
+            confidence=0.5,
+            claim=claim,
+            rationale=rationale,
+            evidence=evidence_items,
+            summary=None,
+        )
+
+    cards: list[ExplanationCard] = []
+
+    # Layer 1: one-sentence style — we just reuse the first paragraph.
+    if first_para:
+        cards.append(
+            make_card(
+                claim=first_para,
+                rationale=(
+                    "Stub one-sentence explanation derived from the first "
+                    "paragraph of the input."
+                ),
+            )
+        )
+
+    # Layer 2: three-paragraph style — short synthesis of all text.
+    if all_text:
+        cards.append(
+            make_card(
+                claim="Stub multi-paragraph explanation based on the full input text.",
+                rationale=all_text,
+            )
+        )
+
+    # Layer 3: deep dive — more verbose but still purely local.
+    cards.append(
+        make_card(
+            claim="Stub deep-dive explanation for offline execution (no LLM used).",
+            rationale=all_text or "No additional details available in the input text.",
+        )
+    )
+
+    return cards
+
+
 def run_explainer_stub(
     bb: Blackboard,
     *,
@@ -333,8 +429,7 @@ def run_explainer_stub(
 ) -> list[dict[str, Any]]:
     """Backward-compatible wrapper around :func:`run_explainer`.
 
-    This function preserves the historical stub signature used by the
-    public-translation pipeline::
+    This keeps the old signature used by the public-translation pipeline::
 
         explanation_cards = run_explainer_stub(
             blackboard,
@@ -342,35 +437,43 @@ def run_explainer_stub(
             target_key="explanations",
         )
 
-    For compatibility, the keyword arguments are accepted but currently
-    ignored, because :func:`run_explainer` always reads from and writes to
-    the internal default keys. In the future we could thread these keys
-    through if we want more flexibility.
-
-    The function:
-
-    1. Delegates to :func:`run_explainer`.
-    2. Raises :class:`RuntimeError` if the underlying Result is an error.
-    3. Converts the returned :class:`ExplanationCard` objects into plain
-       ``dict`` values via :meth:`model_dump`, suitable for JSON serialisation.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        JSON-like representation of all explanation cards.
+    Behavior
+    --------
+    1. Normal case: Calls :func:`run_explainer` to get the real list of
+       :class:`ExplanationCard` and returns the JSON version.
+    2. Fallback case: If the LLM call fails (e.g., due to missing API key),
+       it falls back to local stub logic (no network access):
+       constructs very simple explanation cards from ``parsed_chunks``,
+       writes them to the blackboard, and returns them.
     """
-    # NOTE: `source_key` and `target_key` are intentionally unused for now.
-    # They are kept to avoid breaking existing pipeline code and type hints.
-    _ = source_key
-    _ = target_key
+    # Safely retrieve the paragraphs generated by the parser for use in the stub fallback.
+    parsed_raw: Any = bb.get(source_key)
+    parsed_chunks: list[Mapping[str, Any]] = []
+    if isinstance(parsed_raw, Sequence):
+        for chunk in parsed_raw:
+            if isinstance(chunk, Mapping):
+                parsed_chunks.append(cast(Mapping[str, Any], chunk))
 
-    result = run_explainer(bb)
-    if result.is_err():
-        # Fail fast for the stub path rather than silently returning garbage.
-        raise RuntimeError(f"run_explainer_stub error: {result}")
+    # Attempt the actual LLM explainer.
+    result: Result[list[ExplanationCard], str] = run_explainer(bb)
 
-    cards = result.unwrap()
-    return [card.model_dump() for card in cards]
+    if result.is_ok():
+        # Happy path: The Result is Ok; safely unwrap the value.
+        cards = result.unwrap([])
+        # run_explainer() has already written the cards to the blackboard; this returns the JSON.
+        return [card.model_dump(mode="json") for card in cards]
+
+    # Error path: Extract the error message from the Result to check if it's "Missing API key".
+    error_msg = str(result)
+    if "Missing API key" in error_msg:
+        # For CI/local environments without keys, use pure local stub logic:
+        # construct explanation cards from parsed_chunks.
+        stub_cards = _build_stub_cards_from_parsed(parsed_chunks)
+        bb.put(target_key, stub_cards)
+        return [card.model_dump(mode="json") for card in stub_cards]
+
+    # For others, maintain original behavior: raise directly so the caller/test sees the real issue.
+    raise RuntimeError(f"run_explainer_stub error: {error_msg}")
 
 
 __all__ = [
