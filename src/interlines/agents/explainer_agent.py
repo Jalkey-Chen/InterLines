@@ -273,7 +273,7 @@ def _build_card(
     # checkers quiet about the extra keyword arguments handled by Pydantic.
     return ExplanationCard(
         kind="explanation.v1",
-        version="v1",
+        version="1.0.0",
         confidence=0.5,
         claim=claim,
         rationale=rationale,
