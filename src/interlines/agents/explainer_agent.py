@@ -41,6 +41,19 @@ _EXPLAINER_MODEL_ALIAS = "explainer"
 # Supported explanation levels in the LLM JSON payload.
 _LEVELS: tuple[str, ...] = ("one_sentence", "three_paragraph", "deep_dive")
 
+# --------------------------------------------------------------------------- #
+# Backwards-compatible level constants (used by pipelines)
+# --------------------------------------------------------------------------- #
+
+#: High-level, single-sentence explanation layer.
+LEVEL_ONE_SENTENCE: str = "one_sentence"
+
+#: Medium, three-paragraph explanation layer.
+LEVEL_THREE_PARAGRAPH: str = "three_paragraph"
+
+#: Deep, detailed explanation layer.
+LEVEL_DEEP_DIVE: str = "deep_dive"
+
 
 def _get_llm_client() -> LLMClient:
     """Construct an LLM client configured for the explainer agent.
@@ -307,3 +320,23 @@ def run_explainer(bb: Blackboard) -> Result[list[ExplanationCard], str]:
     bb.put(_EXPLANATIONS_KEY, cards)
 
     return ok(cards)
+
+
+def run_explainer_stub(bb: Blackboard) -> Result[list[ExplanationCard], str]:
+    """Backward-compatible wrapper around :func:`run_explainer`.
+
+    Historically the explainer agent exposed a ``run_explainer_stub`` function
+    during the stub phase. We keep this thin alias so that existing pipeline
+    code importing the stub name continues to work while the underlying
+    implementation is upgraded to the real LLM-backed explainer.
+    """
+    return run_explainer(bb)
+
+
+__all__ = [
+    "LEVEL_ONE_SENTENCE",
+    "LEVEL_THREE_PARAGRAPH",
+    "LEVEL_DEEP_DIVE",
+    "run_explainer",
+    "run_explainer_stub",
+]
