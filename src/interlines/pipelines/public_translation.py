@@ -51,6 +51,15 @@ _PUBLIC_BRIEF_KEY = "public_brief"
 PIPELINE_BRIEF_TITLE = "InterLines public translation (stub)"
 
 
+class PublicBriefMeta(TypedDict):
+    """Meta-information about the brief, used by UIs and tests."""
+
+    num_chunks: int
+    num_cards: int
+    enable_history: bool
+    input_preview: str
+
+
 class PublicBriefPayload(TypedDict):
     """JSON-safe stub payload representing a public brief.
 
@@ -59,9 +68,18 @@ class PublicBriefPayload(TypedDict):
     `PublicBrief` contract in later phases.
     """
 
+    # Machine-facing type tag, used by tests and future UIs.
+    kind: str
+
+    # Small meta block summarizing the pipeline run.
+    meta: PublicBriefMeta
+
+    # Human-facing content.
     title: str
     highlights: list[str]
     sections: list[dict[str, Any]]
+
+    # Optional note used when history is enabled.
     history_note: NotRequired[str]
 
 
@@ -76,6 +94,16 @@ class PipelineResult(TypedDict):
     parsed_chunks: list[str]
     explanations: list[ExplanationCard]
     public_brief: PublicBriefPayload
+
+
+def _make_input_preview(source_text: str, max_len: int = 240) -> str:
+    """Build a short preview of the original input text."""
+    preview = source_text.strip()
+    if not preview:
+        return ""
+    if len(preview) <= max_len:
+        return preview
+    return preview[: max_len - 3].rstrip() + "..."
 
 
 def _select_card_by_level(
@@ -100,6 +128,7 @@ def _build_public_brief_stub(
     source_text: str,
     cards: Sequence[ExplanationCard],
     enable_history: bool,
+    num_chunks: int,
 ) -> PublicBriefPayload:
     """Assemble a simple public-facing brief from explanation cards.
 
@@ -138,6 +167,13 @@ def _build_public_brief_stub(
         )
 
     brief: PublicBriefPayload = {
+        "kind": "public_brief.stub.v1",
+        "meta": {
+            "num_chunks": num_chunks,
+            "num_cards": len(cards),
+            "enable_history": enable_history,
+            "input_preview": _make_input_preview(source_text),
+        },
         "title": title,
         "highlights": highlights,
         "sections": sections,
@@ -206,6 +242,7 @@ def run_pipeline(input_text: str, enable_history: bool = False) -> PipelineResul
         source_text=input_text,
         cards=explanation_cards,
         enable_history=enable_history,
+        num_chunks=len(parsed_chunks),
     )
 
     # 4) Persist the brief and take a final trace snapshot.
