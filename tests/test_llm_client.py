@@ -33,6 +33,7 @@ def test_generate_openai_compatible_uses_registry_and_returns_text(
     captured: dict[str, Any] = {}
 
     def fake_post(
+        self: LLMClient,
         *,
         url: str,
         headers: dict[str, str],
@@ -53,8 +54,8 @@ def test_generate_openai_compatible_uses_registry_and_returns_text(
             ]
         }
 
-    # Patch the internal network call.
-    monkeypatch.setattr(client, "_post", fake_post)
+    # Patch the internal network call at the class level (slots-safe).
+    monkeypatch.setattr(LLMClient, "_post", fake_post)
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -95,6 +96,7 @@ def test_generate_gemini_uses_google_key_and_extracts_content(
     captured: dict[str, Any] = {}
 
     def fake_post(
+        self: LLMClient,
         *,
         url: str,
         headers: dict[str, str],
@@ -118,7 +120,7 @@ def test_generate_gemini_uses_google_key_and_extracts_content(
             ]
         }
 
-    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(LLMClient, "_post", fake_post)
 
     messages: list[dict[str, str]] = [
         {"role": "user", "content": "Explain the history of a concept briefly."},
