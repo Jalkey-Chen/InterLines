@@ -267,16 +267,19 @@ def _build_card(
         EvidenceItem(text=c, source=provenance_label) for c in claims_list
     ]
 
-    # The underlying Artifact base class provides defaults for `kind`,
-    # `version`, and `confidence`. Here we populate the Explanation-specific
-    # fields plus evidence; a small `type: ignore` keeps static checkers quiet
-    # about the extra keyword arguments handled by Pydantic at runtime.
+    # The Artifact base class defines `kind` / `version` / `confidence` as
+    # required fields. Here we pin them to the canonical explanation schema
+    # and use a neutral confidence score. A small `type: ignore` keeps static
+    # checkers quiet about the extra keyword arguments handled by Pydantic.
     return ExplanationCard(
+        kind="explanation.v1",
+        version="v1",
+        confidence=0.5,
         claim=claim,
         rationale=rationale,
         evidence=evidence_items,
         summary=None,
-    )  # type: ignore[call-arg]
+    )
 
 
 def run_explainer(bb: Blackboard) -> Result[list[ExplanationCard], str]:
