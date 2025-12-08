@@ -92,7 +92,7 @@ class PipelineResult(TypedDict):
 
     blackboard: Blackboard
     parsed_chunks: list[str]
-    explanations: list[ExplanationCard]
+    explanations: list[dict[str, Any]]
     public_brief: PublicBriefPayload
 
 
@@ -104,6 +104,28 @@ def _make_input_preview(source_text: str, max_len: int = 240) -> str:
     if len(preview) <= max_len:
         return preview
     return preview[: max_len - 3].rstrip() + "..."
+
+
+def _card_to_dict(card: ExplanationCard | Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize an explanation card to a plain dict.
+
+    The explainer agent returns `ExplanationCard` instances, but the
+    pipeline API and the blackboard should expose JSON-safe dicts.
+    """
+    # Already a mapping (including plain dict) - just make a shallow copy.
+    if isinstance(card, Mapping):
+        return dict(card)
+
+    # For ExplanationCard (a Pydantic model), use its built-in serializers.
+    if hasattr(card, "model_dump"):
+        # Pydantic v2 style
+        return card.model_dump()
+    if hasattr(card, "dict"):
+        # Pydantic v1 style
+        return card.dict()
+
+    # Very defensive fallback - should rarely be needed.
+    return {key: getattr(card, key) for key in dir(card) if not key.startswith("_")}
 
 
 def _select_card_by_level(
@@ -126,7 +148,7 @@ def _build_public_brief_stub(
     *,
     title: str,
     source_text: str,
-    cards: Sequence[ExplanationCard],
+    cards: Sequence[dict[str, Any]],
     enable_history: bool,
     num_chunks: int,
 ) -> PublicBriefPayload:
@@ -139,8 +161,9 @@ def _build_public_brief_stub(
     # Highlights: take up to the first three non-empty claims.
     highlights: list[str] = []
     for card in cards:
-        if card.claim:
-            highlights.append(card.claim)
+        claim = str(card.get("claim", "") or "")
+        if claim:
+            highlights.append(claim)
         if len(highlights) >= 3:
             break
 
@@ -150,10 +173,13 @@ def _build_public_brief_stub(
     # Sections: one section per explanation card.
     sections: list[dict[str, Any]] = []
     for card in cards:
-        body = card.rationale or card.claim or ""
+        claim = str(card.get("claim", "") or "")
+        rationale = str(card.get("rationale", "") or "")
+        title_text = claim or "Explanation"
+        body = rationale or claim or ""
         sections.append(
             {
-                "title": card.claim or "Explanation",
+                "title": title_text,
                 "body": body,
             }
         )
@@ -219,6 +245,8 @@ def run_pipeline(input_text: str, enable_history: bool = False) -> PipelineResul
       ``"pipeline: public_translation complete"``.
     """
     bb = Blackboard()
+    # Record a human-readable marker for the beginning of the pipeline.
+    bb.trace(f"pipeline: public_translation start (enable_history={enable_history})")
 
     # 1) Parse raw text into chunks and record a trace snapshot.
     parsed_chunks = parser.parser_agent(
@@ -230,29 +258,36 @@ def run_pipeline(input_text: str, enable_history: bool = False) -> PipelineResul
     )
 
     # 2) Run the explainer stub to produce explanation cards.
-    explanation_cards = run_explainer_stub(
+    raw_cards = run_explainer_stub(
         bb,
         source_key=_PARSED_CHUNKS_KEY,
         target_key=_EXPLANATIONS_KEY,
     )
 
-    # 3) Assemble a stub public brief from the explanation cards.
+    # 3) Convert ExplanationCard objects to plain dicts for external use.
+    cards_as_dicts = [_card_to_dict(card) for card in raw_cards]
+
+    # Keep the blackboard consistent with the public API: store dicts.
+    bb.put(_EXPLANATIONS_KEY, cards_as_dicts)
+
+    # 4) Assemble a stub public brief from the explanation dicts.
     brief = _build_public_brief_stub(
         title=PIPELINE_BRIEF_TITLE,
         source_text=input_text,
-        cards=explanation_cards,
+        cards=cards_as_dicts,
         enable_history=enable_history,
         num_chunks=len(parsed_chunks),
     )
 
-    # 4) Persist the brief and take a final trace snapshot.
+    # 5) Persist the brief and take a final trace snapshot.
     bb.put(_PUBLIC_BRIEF_KEY, brief)
+    # Record a marker for the end of the pipeline.
     bb.trace("pipeline: public_translation complete")
 
     result: PipelineResult = {
         "blackboard": bb,
         "parsed_chunks": parsed_chunks,
-        "explanations": explanation_cards,
+        "explanations": cards_as_dicts,
         "public_brief": brief,
     }
     return result
