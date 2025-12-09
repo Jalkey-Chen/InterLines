@@ -42,7 +42,7 @@ from interlines.agents.editor_agent import run_editor
 from interlines.agents.explainer_agent import run_explainer
 from interlines.agents.history_agent import run_history
 from interlines.agents.jargon_agent import run_jargon
-from interlines.agents.parser import parser_agent
+from interlines.agents.parser_agent import parser_agent
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.contracts.explanation import ExplanationCard
 from interlines.core.contracts.public_brief import BriefSection, PublicBrief
@@ -108,7 +108,7 @@ class PipelineResult(TypedDict):
     """
 
     blackboard: Blackboard
-    parsed_chunks: list[str]
+    parsed_chunks: list[dict[str, Any]]
     explanations: list[dict[str, Any]]
     relevance_notes: list[dict[str, Any]]
     terms: list[dict[str, Any]]

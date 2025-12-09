@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from interlines.agents.parser import parser_agent
+from interlines.agents.parser_agent import parser_agent
 from interlines.core.blackboard.memory import Blackboard
 
 
