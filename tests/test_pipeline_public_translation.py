@@ -5,10 +5,8 @@ These tests exercise the wiring in ``interlines.pipelines.public_translation``:
 
 - By default, we stub all LLM-backed agents so that CI and local runs do
   not depend on external API keys or network calls.
-- If the environment variable ``INTERLINES_PIPELINE_TEST_MODE`` is set
-  to ``"real"``, stubs are disabled and the tests exercise the real
-  agents. In that mode, missing API keys will cause failures, which is
-  useful as an integration-style self-check on a developer machine.
+- The stubs intentionally return plain dicts and lists; the pipeline
+  converts them to JSON-safe payloads via ``_artifact_to_dict``.
 """
 
 from __future__ import annotations
@@ -33,16 +31,12 @@ def _run_pipeline_with_stubbed_agents(
 ) -> PipelineResult:
     """Run ``run_pipeline`` with all LLM-dependent agents stubbed out.
 
-    This helper patches the agent entrypoints imported by the
+    The helper monkey-patches the agent entrypoints imported by the
     :mod:`public_translation` module so that end-to-end tests can run in
     environments without API keys or network access.
-
-    The stubs intentionally return simple dictionaries and lists instead of
-    full Pydantic models; the pipeline converts everything to JSON-safe
-    ``dict`` objects via ``_artifact_to_dict``.
     """
     # Work with the module as ``Any`` so mypy does not complain about
-    # attribute existence or type mismatches when monkeypatching in tests.
+    # attribute existence or type mismatches when monkeypatching.
     mod_any = cast(Any, pipeline_mod)
 
     # Save original callables so we can restore them in a ``finally`` block.
@@ -138,7 +132,7 @@ def _run_pipeline_with_stubbed_agents(
         return ok(f"artifacts/reports/{run_id}-stub.md")
 
     try:
-        # Install stubs on the module (viewed as ``Any`` for type-checking).
+        # Install stubs on the module.
         mod_any.run_explainer = fake_run_explainer
         mod_any.run_citizen = fake_run_citizen
         mod_any.run_jargon = fake_run_jargon
@@ -149,8 +143,7 @@ def _run_pipeline_with_stubbed_agents(
         # Run the real pipeline implementation with our fake agents.
         return run_pipeline(input_text, enable_history=enable_history)
     finally:
-        # Restore original functions so that other tests (or callers) are not
-        # affected by our monkeypatching.
+        # Restore original functions so that other tests are not affected.
         mod_any.run_explainer = orig_run_explainer
         mod_any.run_citizen = orig_run_citizen
         mod_any.run_jargon = orig_run_jargon
@@ -160,15 +153,12 @@ def _run_pipeline_with_stubbed_agents(
 
 
 def test_run_pipeline_with_history_produces_artifacts() -> None:
-    """Full pipeline run (with history) should produce core artifacts.
-
-    This test exercises the public-translation pipeline end-to-end while
-    using stubbed agents to avoid external API dependencies.
-    """
+    """Full pipeline run (with history) should produce core artifacts."""
     input_text = (
         "InterLines turns expert language into public language. "
         "It also provides a historical lens over time. "
-        "Agents collaborate through a shared blackboard to build layered explanations."
+        "Agents collaborate through a shared blackboard to build layered "
+        "explanations."
     )
 
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
@@ -176,7 +166,7 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
         enable_history=True,
     )
 
-    # Parsed chunks: non-empty list of strings.
+    # Parsed chunks: non-empty list of dicts.
     parsed = result["parsed_chunks"]
     assert isinstance(parsed, list)
     assert parsed
@@ -185,8 +175,7 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
     seg = parsed[0]
     assert "id" in seg
     assert "text" in seg
-    # In stub-mode (llm=None), parser_agent does not add page/type metadata.
-    # Therefore we only require id/text here.
+    # In stub-mode (llm=None), parser_agent only guarantees id/text.
     assert isinstance(seg["id"], str)
     assert isinstance(seg["text"], str)
 
@@ -203,9 +192,9 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
     # Public brief payload: basic shape and title/summary presence.
     brief: PublicBriefPayload = result["public_brief"]
     assert isinstance(brief["title"], str)
-    assert brief["title"] != ""
+    assert brief["title"]
     assert isinstance(brief["summary"], str)
-    assert brief["summary"] != ""
+    assert brief["summary"]
     assert isinstance(brief["sections"], list)
     assert brief["sections"]
 
@@ -230,12 +219,12 @@ def test_run_pipeline_without_history_skips_timeline() -> None:
 
     # The brief should still be produced.
     brief: PublicBriefPayload = result["public_brief"]
-    assert brief["title"] != ""
-    assert brief["summary"] != ""
+    assert brief["title"]
+    assert brief["summary"]
 
 
 def test_pipeline_records_planner_dag_and_trace() -> None:
-    """Planner DAG payload and trace snapshot should be recorded on the blackboard."""
+    """Planner DAG payload and trace snapshot should be recorded."""
     input_text = "Trace and planner DAG test."
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
         input_text,
@@ -249,13 +238,12 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
     assert dag_payload["strategy"] == "with_history"
     assert tuple(dag_payload["topo"]) == expected_path(enable_history=True)
 
-    # A trace snapshot should contain the planner note and the DAG key.
+    # A trace snapshot should contain the planner note.
     snaps = bb.traces()
     assert snaps
     notes = [snap.note for snap in snaps]
     assert "planner: public_translation plan" in notes
 
-    # Inspect the last snapshot that mentions the planner.
     planner_snaps = [snap for snap in snaps if snap.note == "planner: public_translation plan"]
     assert planner_snaps
     last = planner_snaps[-1]
@@ -265,11 +253,7 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
 
 
 def test_pipeline_records_final_trace() -> None:
-    """Pipeline should record at least one trace snapshot on the blackboard.
-
-    The final snapshot is expected to correspond to the completion of the
-    public-translation pipeline.
-    """
+    """Pipeline should record a final completion snapshot on the blackboard."""
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
         "Trace test text.",
         enable_history=False,
@@ -280,6 +264,6 @@ def test_pipeline_records_final_trace() -> None:
     assert len(snaps) >= 1
 
     last = snaps[-1]
-    note: str | None = last.note
+    note = last.note
     assert note is not None
     assert "pipeline: public_translation complete" in note

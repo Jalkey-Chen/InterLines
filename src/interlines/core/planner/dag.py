@@ -31,10 +31,32 @@ class DAG:
     DAG-driven pipeline execution in Commit 2.
     """
 
+    # ---------------------------------------------------------
+    # NEW: explicit attribute declarations (mypy needs these)
+    # ---------------------------------------------------------
+    nodes: dict[str, Node]
+    edges: dict[str, set[str]]
+    rev_edges: dict[str, set[str]]  # <-- added
+
     def __init__(self, *, strategy: str) -> None:
         self.strategy: str = strategy
-        self.nodes: dict[str, Node] = {}
-        self.edges: dict[str, set[str]] = {}
+        self.nodes = {}
+        self.edges = {}
+        self.rev_edges = {}  # <-- added
+
+    # ---------------------------------------------------------
+    # Helper: rebuild reverse edges
+    # ---------------------------------------------------------
+    def _recompute_rev_edges(self) -> None:
+        """Rebuild reverse adjacency lists.
+
+        This keeps DAG topological sort stable even if edges mutate.
+        """
+        rev: dict[str, set[str]] = {u: set() for u in self.nodes}
+        for u, vs in self.edges.items():
+            for v in vs:
+                rev.setdefault(v, set()).add(u)
+        self.rev_edges = rev
 
     # ----------------------------------------------------------------------
     # Basic DAG construction
@@ -50,33 +72,50 @@ class DAG:
         self.edges.setdefault(src, set()).add(dst)
         self.edges.setdefault(dst, set())  # ensure dst appears as a key
 
+        self._recompute_rev_edges()  # <-- added
+
     # ----------------------------------------------------------------------
     # Topological sort (Kahn's algorithm)
     # ----------------------------------------------------------------------
 
-    def topological_order(self) -> tuple[str, ...]:
-        """Return a valid topological ordering of node IDs."""
-        indeg = {n: 0 for n in self.nodes}
+    def topological_order(self) -> list[str]:
+        """
+        Return the nodes in topologically sorted order.
 
-        for _src, targets in self.edges.items():
-            for t in targets:
-                indeg[t] += 1
+        Notes
+        -----
+        - A ``list`` is returned (not a ``tuple``) because most planner
+          components (including ``plan_spec.steps`` and JSON serialization)
+          naturally operate on lists.
+        - Returning a list avoids mypy's non-overlap warnings when comparing
+          with ``plan_spec.steps`` (which is also a list).
+        - Uses a local indegree map; the underlying DAG is never mutated.
 
-        queue = [n for n, d in indeg.items() if d == 0]
+        Raises
+        ------
+        ValueError
+            If the DAG contains a cycle.
+        """
+        # Ensure reverse edges are ready
+        if not self.rev_edges:
+            self._recompute_rev_edges()
+
+        indeg = {u: len(self.rev_edges.get(u, ())) for u in self.nodes}
+        queue = [u for u in self.nodes if indeg[u] == 0]
         out: list[str] = []
 
         while queue:
-            n = queue.pop(0)
-            out.append(n)
-            for t in self.edges.get(n, ()):
-                indeg[t] -= 1
-                if indeg[t] == 0:
-                    queue.append(t)
+            u = queue.pop()
+            out.append(u)
+            for v in self.edges.get(u, ()):
+                indeg[v] -= 1
+                if indeg[v] == 0:
+                    queue.append(v)
 
         if len(out) != len(self.nodes):
-            raise ValueError("Graph has a cycle or disconnected components.")
+            raise ValueError("DAG contains a cycle")
 
-        return tuple(out)
+        return out
 
     # ----------------------------------------------------------------------
     # NEW: Build a DAG directly from PlannerPlanSpec
@@ -100,6 +139,8 @@ class DAG:
         # Linear edges
         for a, b in zip(plan.steps, plan.steps[1:], strict=False):
             dag.edges[a].add(b)
+
+        dag._recompute_rev_edges()  # <-- required for topo sort
 
         return dag
 
