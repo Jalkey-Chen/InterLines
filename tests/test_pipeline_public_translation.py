@@ -55,6 +55,8 @@ def _run_pipeline_with_stubbed_agents(
             "confidence": 1.0,
             "claim": "Stub explanation for testing.",
             "rationale": "This is a stub rationale produced by the test suite.",
+            "summary": "Stub summary of explanation.",
+            "text": "Stub explanation for testing.",
         }
         return ok([card])
 
