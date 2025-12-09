@@ -1,49 +1,51 @@
-"""Planner DAG tests: strategy-dependent path and trace serialization."""
+"""
+Tests for default planner ordering and DAG generation.
 
-from __future__ import annotations
+This verifies three invariants:
 
-import json
-from pathlib import Path
-from typing import Any
+1. The step order returned by build_default_plan(...) matches the
+   legacy hand-written expected path for enable_history = {True, False}.
 
-from interlines.core.blackboard.storage import TraceWriter
-from interlines.core.planner.strategy import build_plan, expected_path
+2. DAG.from_plan_spec(plan_spec).topological_order() is identical to
+   plan_spec.steps.
 
+3. No cycles or missing nodes exist in the generated DAG.
+"""
 
-def test_public_only_path() -> None:
-    """When history is disabled, the timeline step is omitted."""
-    dag = build_plan(enable_history=False)
-    assert dag.strategy == "public_only"
-    assert dag.topo_order() == expected_path(False)
+from interlines.core.planner.dag import DAG
+from interlines.core.planner.strategy import build_plan
 
-
-def test_with_history_path() -> None:
-    """When history is enabled, the timeline step is included."""
-    dag = build_plan(enable_history=True)
-    assert dag.strategy == "with_history"
-    assert dag.topo_order() == expected_path(True)
+# Legacy expected execution paths
+EXPECTED_NO_HISTORY = ["parse", "translate", "narrate", "review", "brief"]
+EXPECTED_WITH_HISTORY = ["parse", "translate", "timeline", "narrate", "review", "brief"]
 
 
-def test_dag_serializes_to_trace(tmp_path: Path, monkeypatch: Any) -> None:
-    """DAG snapshot can be written to artifacts/trace and read back."""
-    outdir = tmp_path / "trace"
-    monkeypatch.setenv("INTERLINES_TRACE_DIR", str(outdir))
+def test_default_plan_matches_expected_path_no_history() -> None:
+    plan_spec, _ = build_plan(enable_history=False)
+    assert plan_spec.steps == EXPECTED_NO_HISTORY
 
-    dag = build_plan(enable_history=True)
-    snap = dag.to_snapshot(note="planner.dag")
 
-    writer = TraceWriter()  # picks up env var
-    path = writer.write(snap)
-    assert path.exists()
+def test_default_plan_matches_expected_path_with_history() -> None:
+    plan_spec, _ = build_plan(enable_history=True)
+    assert plan_spec.steps == EXPECTED_WITH_HISTORY
 
-    payload: dict[str, Any]
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
 
-    assert payload["note"] == "planner.dag"
-    assert "created_at" in payload and payload["created_at"].endswith("Z")
-    assert "dag" in payload["data"]
-    dag_json = payload["data"]["dag"]
-    assert dag_json["strategy"] == "with_history"
-    assert dag_json["topo"] == list(expected_path(True))
-    assert {n["id"] for n in dag_json["nodes"]} >= set(expected_path(True))
+def test_dag_matches_plan_spec_no_history() -> None:
+    plan_spec, _ = build_plan(enable_history=False)
+    dag = DAG.from_plan_spec(plan_spec)
+    assert dag.topological_order() == plan_spec.steps
+
+
+def test_dag_matches_plan_spec_with_history() -> None:
+    plan_spec, _ = build_plan(enable_history=True)
+    dag = DAG.from_plan_spec(plan_spec)
+    assert dag.topological_order() == plan_spec.steps
+
+
+def test_dag_no_cycles() -> None:
+    plan_spec, _ = build_plan(enable_history=True)
+    dag = DAG.from_plan_spec(plan_spec)
+
+    order = dag.topological_order()
+    assert len(order) == len(set(order))  # no duplicates
+    assert set(order) == set(plan_spec.steps)

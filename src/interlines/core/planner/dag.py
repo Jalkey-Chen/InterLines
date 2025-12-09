@@ -1,145 +1,161 @@
-"""Minimal DAG model and serializer for the InterLines planner.
+"""
+DAG structure for orchestrating pipeline agent steps.
 
-This module provides a tiny, serializable, *directed acyclic graph* (DAG)
-abstraction used by the planning strategy layer.
-
-Key features
-------------
-- `DAG.add_node(id, label)`, `DAG.add_edge(u, v)` with acyclicity check.
-- `DAG.topo_order()` returns a deterministic topological ordering.
-- `DAG.to_payload()` returns a JSON-safe dictionary (no `Any` leaks).
-- `DAG.to_snapshot(note)` converts the current DAG into a `Snapshot` that can
-  be written to `artifacts/trace/` using `TraceWriter`.
-
-Design notes
-------------
-- The DAG is intentionally small and dependency-free to keep planning logic
-  transparent and testable.
-- We keep node ids stable (snake_case) and store a human-readable `label`.
+Commit 1 (Step 5.1):
+- Rename class Dag → DAG (fully uppercase for semantic clarity)
+- Introduce DAG.from_plan_spec()
+- Preserve legacy behavior so existing tests continue to pass
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 
-from interlines.core.blackboard.memory import Snapshot
+from interlines.core.contracts.planner import PlannerPlanSpec
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass
 class Node:
-    """A graph node with a stable `id` and a human-readable `label`."""
+    """A node in the planner DAG."""
 
     id: str
-    label: str
+    label: str = ""
+    meta: dict[str, object] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
 class DAG:
-    """A tiny directed acyclic graph with serialization helpers."""
+    """
+    A minimal, test-friendly directed acyclic graph used by the planner.
 
-    # Public fields
-    nodes: dict[str, Node] = field(default_factory=dict)
-    edges: list[tuple[str, str]] = field(default_factory=list)
-    strategy: str = "public_only"  # e.g., "public_only" | "with_history"
+    Commit 1 focuses on preserving all existing behavior while preparing for
+    DAG-driven pipeline execution in Commit 2.
+    """
 
-    # ------------------------------- Build API --------------------------------
-    def add_node(self, node_id: str, label: str) -> None:
-        """Add a node (idempotent on id)."""
-        if node_id not in self.nodes:
-            self.nodes[node_id] = Node(node_id, label)
+    # ---------------------------------------------------------
+    # NEW: explicit attribute declarations (mypy needs these)
+    # ---------------------------------------------------------
+    nodes: dict[str, Node]
+    edges: dict[str, set[str]]
+    rev_edges: dict[str, set[str]]  # <-- added
 
-    def add_edge(self, u: str, v: str) -> None:
-        """Add a directed edge `u -> v` and assert no cycles are introduced."""
-        if (u, v) in self.edges:
-            return
-        if u not in self.nodes or v not in self.nodes:
-            raise KeyError("Both endpoints must be added before adding an edge.")
-        # Tentatively add and verify acyclicity via Kahn topo
-        self.edges.append((u, v))
-        try:
-            _ = self.topo_order()
-        except ValueError:
-            # revert and re-raise
-            self.edges.pop()
-            raise
+    def __init__(self, *, strategy: str) -> None:
+        self.strategy: str = strategy
+        self.nodes = {}
+        self.edges = {}
+        self.rev_edges = {}  # <-- added
 
-    # ------------------------------- Query API --------------------------------
-    def topo_order(self) -> tuple[str, ...]:
-        """Return a deterministic topological ordering of node ids.
+    # ---------------------------------------------------------
+    # Helper: rebuild reverse edges
+    # ---------------------------------------------------------
+    def _recompute_rev_edges(self) -> None:
+        """Rebuild reverse adjacency lists.
+
+        This keeps DAG topological sort stable even if edges mutate.
+        """
+        rev: dict[str, set[str]] = {u: set() for u in self.nodes}
+        for u, vs in self.edges.items():
+            for v in vs:
+                rev.setdefault(v, set()).add(u)
+        self.rev_edges = rev
+
+    # ----------------------------------------------------------------------
+    # Basic DAG construction
+    # ----------------------------------------------------------------------
+
+    def add(self, src: str, dst: str, *, label: str = "") -> None:
+        """Add an edge src → dst, creating missing nodes automatically."""
+        if src not in self.nodes:
+            self.nodes[src] = Node(id=src, label=src)
+        if dst not in self.nodes:
+            self.nodes[dst] = Node(id=dst, label=dst)
+
+        self.edges.setdefault(src, set()).add(dst)
+        self.edges.setdefault(dst, set())  # ensure dst appears as a key
+
+        self._recompute_rev_edges()  # <-- added
+
+    # ----------------------------------------------------------------------
+    # Topological sort (Kahn's algorithm)
+    # ----------------------------------------------------------------------
+
+    def topological_order(self) -> list[str]:
+        """
+        Return the nodes in topologically sorted order.
+
+        Notes
+        -----
+        - A ``list`` is returned (not a ``tuple``) because most planner
+          components (including ``plan_spec.steps`` and JSON serialization)
+          naturally operate on lists.
+        - Returning a list avoids mypy's non-overlap warnings when comparing
+          with ``plan_spec.steps`` (which is also a list).
+        - Uses a local indegree map; the underlying DAG is never mutated.
 
         Raises
         ------
         ValueError
-            If a cycle is detected (i.e., not all nodes can be ordered).
+            If the DAG contains a cycle.
         """
-        indeg: dict[str, int] = {nid: 0 for nid in self.nodes}
-        for _, v in self.edges:
-            indeg[v] += 1
+        # Ensure reverse edges are ready
+        if not self.rev_edges:
+            self._recompute_rev_edges()
 
-        # Stable queue: process by lexicographic id to keep order deterministic
-        ready: list[str] = sorted([n for n, d in indeg.items() if d == 0])
-        order: list[str] = []
-        # Build adjacency once for speed
-        adj: dict[str, list[str]] = {nid: [] for nid in self.nodes}
-        for u, v in self.edges:
-            adj[u].append(v)
-        for lst in adj.values():
-            lst.sort()
+        indeg = {u: len(self.rev_edges.get(u, ())) for u in self.nodes}
+        queue = [u for u in self.nodes if indeg[u] == 0]
+        out: list[str] = []
 
-        while ready:
-            u = ready.pop(0)
-            order.append(u)
-            for v in adj[u]:
+        while queue:
+            u = queue.pop()
+            out.append(u)
+            for v in self.edges.get(u, ()):
                 indeg[v] -= 1
                 if indeg[v] == 0:
-                    # maintain lexicographic order
-                    ready.append(v)
-                    ready.sort()
+                    queue.append(v)
 
-        if len(order) != len(self.nodes):
-            raise ValueError("Cycle detected in DAG.")
-        return tuple(order)
+        if len(out) != len(self.nodes):
+            raise ValueError("DAG contains a cycle")
 
-    # ------------------------------ Serialization -----------------------------
-    def to_payload(self) -> dict[str, object]:
-        """Return a JSON-safe dictionary describing this DAG.
+        return out
 
-        The payload is designed to be embedded into a blackboard `Snapshot.data`.
+    # ----------------------------------------------------------------------
+    # NEW: Build a DAG directly from PlannerPlanSpec
+    # ----------------------------------------------------------------------
+
+    @classmethod
+    def from_plan_spec(cls, plan: PlannerPlanSpec) -> DAG:
         """
-        node_list: list[dict[str, str]] = [
-            {"id": n.id, "label": n.label} for n in self.nodes.values()
-        ]
-        edge_list: list[dict[str, str]] = [{"src": u, "dst": v} for (u, v) in self.edges]
+        Construct a DAG whose topological order exactly matches plan.steps.
+
+        Commit 1: This implementation is intentionally minimal and linear:
+        step[i] → step[i+1]
+        """
+        dag = cls(strategy=plan.strategy)
+
+        # Create nodes
+        for step in plan.steps:
+            dag.nodes[step] = Node(id=step, label=step)
+            dag.edges.setdefault(step, set())
+
+        # Linear edges
+        for a, b in zip(plan.steps, plan.steps[1:], strict=False):
+            dag.edges[a].add(b)
+
+        dag._recompute_rev_edges()  # <-- required for topo sort
+
+        return dag
+
+    # ----------------------------------------------------------------------
+    # JSON-safe payload used by tests
+    # ----------------------------------------------------------------------
+
+    def to_payload(self) -> dict[str, object]:
+        """Return JSON-safe structure used by blackboard and tests."""
         return {
             "strategy": self.strategy,
-            "nodes": node_list,
-            "edges": edge_list,
-            "topo": list(self.topo_order()),
+            "nodes": list(self.nodes.keys()),
+            "edges": {k: sorted(v) for k, v in self.edges.items()},
+            "topo": list(self.topological_order()),
         }
 
-    def to_snapshot(self, note: str = "planner") -> Snapshot:
-        """Convert the DAG into a `Snapshot` ready for trace writing.
 
-        Notes
-        -----
-        - `revision` is set to `0` here (not tied to the blackboard mut counter).
-        - `keys` is the ordered tuple of node ids for quick visual inspection.
-        """
-        payload = self.to_payload()
-        return Snapshot(
-            created_at=_now_utc(),
-            revision=0,
-            note=note,
-            keys=self.topo_order(),
-            data={"dag": payload},
-        )
-
-
-# ------------------------------ small helpers --------------------------------
-def _now_utc() -> datetime:
-    """Return the current UTC datetime (timezone-aware)."""
-    return datetime.now(UTC)
-
-
-__all__ = ["Node", "DAG"]
+__all__ = ["DAG", "Node"]

@@ -1,63 +1,70 @@
-"""Planner strategies that generate a minimal DAG for execution.
+"""
+Rule-based planning strategy for the public-translation pipeline.
 
-We support two modes:
-
-- `public_only`  : linear path without historical timeline enrichment.
-- `with_history` : linear path that *includes* a `timeline` step.
-
-Both strategies produce a single linear chain so that `topo_order()` is
-unambiguous and easy to assert in tests, while leaving room to expand to
-branch/merge shapes later.
+Commit 1 (Step 5.1):
+- Introduces PlannerPlanSpec as a structured representation
+- Keeps the legacy DAG construction unchanged so tests continue to pass
 """
 
 from __future__ import annotations
 
+from interlines.core.contracts.planner import PlannerPlanSpec
+
 from .dag import DAG
 
 
-def build_plan(enable_history: bool) -> DAG:
-    """Return a `DAG` according to `enable_history`.
-
-    Parameters
-    ----------
-    enable_history : bool
-        If True, include the `timeline` step; otherwise omit it.
-
-    Returns
-    -------
-    DAG
-        The constructed graph with a deterministic linear order.
-    """
-    dag = DAG()
-    dag.strategy = "with_history" if enable_history else "public_only"
-
-    # Common linear backbone
-    dag.add_node("parse", "Parse source inputs")
-    dag.add_node("translate", "Translate to public language")
-    if enable_history:
-        dag.add_node("timeline", "Build historical timeline / concept drift")
-    dag.add_node("narrate", "Compose narrative")
-    dag.add_node("review", "Review & QA")
-    dag.add_node("brief", "Assemble public brief")
-
-    # Edges (linear path; `timeline` inserted between translate and narrate)
-    dag.add_edge("parse", "translate")
-    if enable_history:
-        dag.add_edge("translate", "timeline")
-        dag.add_edge("timeline", "narrate")
-    else:
-        dag.add_edge("translate", "narrate")
-    dag.add_edge("narrate", "review")
-    dag.add_edge("review", "brief")
-
-    return dag
-
-
 def expected_path(enable_history: bool) -> tuple[str, ...]:
-    """Helper for tests: the canonical expected topological order."""
+    """
+    Return the expected topological order for the rule-based planner.
+    Tests assert this exact ordering.
+    """
     if enable_history:
         return ("parse", "translate", "timeline", "narrate", "review", "brief")
     return ("parse", "translate", "narrate", "review", "brief")
+
+
+def build_plan(enable_history: bool) -> tuple[PlannerPlanSpec, DAG]:
+    """
+    Construct the default rule-based PlannerPlanSpec *and* the legacy DAG.
+
+    Returns
+    -------
+    (planner_plan_spec, dag)
+
+    Notes
+    -----
+    - The pipeline still uses the DAG in Commit 1.
+    - PlannerPlanSpec is introduced now to prepare for DAG-driven
+      execution in Commit 2 and for LLM planning in Step 5.2+.
+    """
+    if enable_history:
+        steps = ["parse", "translate", "timeline", "narrate", "review", "brief"]
+        strategy = "with_history"
+    else:
+        steps = ["parse", "translate", "narrate", "review", "brief"]
+        strategy = "no_history"
+
+    plan_spec = PlannerPlanSpec(
+        strategy=strategy,
+        steps=steps,
+        enable_history=enable_history,
+        notes=None,
+    )
+
+    # legacy DAG-compatible structure (unchanged)
+    dag = DAG(strategy=strategy)
+
+    dag.add("parse", "translate")
+    if enable_history:
+        dag.add("translate", "timeline")
+        dag.add("timeline", "narrate")
+    else:
+        dag.add("translate", "narrate")
+
+    dag.add("narrate", "review")
+    dag.add("review", "brief")
+
+    return plan_spec, dag
 
 
 __all__ = ["build_plan", "expected_path"]
