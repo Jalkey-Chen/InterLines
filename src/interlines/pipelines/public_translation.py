@@ -213,7 +213,7 @@ def _build_public_brief_from_explanations(cards: list[ExplanationCard]) -> Publi
 
     # Artifact schema requires kind/version/confidence
     return PublicBrief(
-        kind="public_brief",
+        kind="public_brief.v1",
         version="1.0.0",
         confidence=1.0,
         title=PIPELINE_BRIEF_TITLE,
