@@ -1,58 +1,24 @@
 """
 Hybrid document extractor for the Parser Agent.
 
-This module provides *format-specific* extractors that convert raw inputs
-(text blobs, PDF files, Word documents, and images) into coarse-grained
-:class:`Block` objects. These “coarse blocks” act as the foundation for the
-LLM-backed semantic parsing stage introduced.
+This module provides *format-specific* extractors that convert raw
+inputs (inline text, file paths) into coarse-grained :class:`Block`
+objects. These coarse Blocks are later refined by the LLM-backed
+semantic parser.
 
-Rationale
----------
-The parser is designed as a two-stage system:
+Design
+------
+- TXT: treated as a single page-1 block.
+- PDF: best-effort extraction; each page becomes one paragraph block.
+  Importantly, the optional dependency ``pdfplumber`` is loaded lazily.
+  The module must remain importable even if ``pdfplumber`` is missing.
+- DOCX: paragraph concatenation; ``python-docx`` also loaded lazily.
+- Image: wrapped as a figure-type block; semantic interpretation (OCR,
+  captioning, metadata recognition) is deferred to the LLM parser.
 
-1. **Extraction stage (this module)**
-   - Handles I/O.
-   - Normalizes filesystem paths.
-   - Converts heterogeneous formats into unified coarse Blocks.
-   - Avoids fine-grained segmentation or semantic labeling.
-
-2. **Semantic parsing stage**
-   - Powered by an LLM with (optional) vision support.
-   - Splits long text into meaningful paragraphs.
-   - Recognizes headings, bullets, lists.
-   - Interprets tables and figures.
-   - Extracts captions and key points.
-
-This separation ensures that:
-
-- File-format complexity is isolated from LLM reasoning.
-- Downstream agents (explainer, history, citizen) work with consistent,
-  structured units.
-- The pipeline remains deterministic and testable before LLMs enter.
-
-Extraction Design
------------------
-TXT
-    Loaded as a *single* paragraph block bound to ``page=1``.
-PDF
-    Each page is emitted as one coarse paragraph block using ``pdfplumber``.
-DOCX
-    All non-empty paragraphs are concatenated and returned as a single block.
-IMAGE
-    Represented as a figure block with ``image_path``, leaving interpretation
-    to the LLM.
-
-Implementation Notes
---------------------
-- This version uses *top-level imports* for format libraries
-  (``pdfplumber``, ``python-docx``, ``Pillow``), because the InterLines
-  runtime environment guarantees they are installed.
-- For editor/IDE compatibility, a type stub for python-docx is placed in
-  ``src/interlines/_stubs/docx.pyi`` so that Pylance recognizes
-  :class:`Document`.
-- All extractors are pure functions: they do not mutate blackboards, write
-  artifacts, or trigger LLM calls. They simply return ``List[Block]`` for
-  the semantic parser to consume.
+None of the functions in this module mutate global state—they only
+return structured Block objects. Higher-level parser logic orchestrates
+the extraction + semantic parsing pipeline.
 """
 
 from __future__ import annotations
@@ -60,34 +26,20 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-import pdfplumber
-from docx import Document
-from PIL import Image  # noqa: F401  # Imported to validate the environment.
-
 from interlines.core.contracts.block import Block
 
-# ===========================================================================
-# Helpers
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
 
 
 def _normalize_path(path: str | Path) -> Path:
-    """Normalize a filesystem path and ensure it exists.
-
-    Parameters
-    ----------
-    path:
-        A filesystem path pointing to a text, PDF, DOCX, or image file.
-
-    Returns
-    -------
-    Path
-        A normalized, absolute :class:`Path` instance.
+    """Normalize a user path into an absolute :class:`Path`.
 
     Raises
     ------
     FileNotFoundError
-        If the provided path does not exist.
+        If the resolved path does not exist.
     """
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -96,41 +48,28 @@ def _normalize_path(path: str | Path) -> Path:
 
 
 def _make_block_id(index: int, prefix: str = "b") -> str:
-    """Generate a simple monotonic block identifier.
+    """Generate a stable block identifier.
 
     Examples
     --------
     >>> _make_block_id(1)
     'b1'
-    >>> _make_block_id(2, prefix="fig")
-    'fig2'
+    >>> _make_block_id(3, prefix="fig")
+    'fig3'
     """
     return f"{prefix}{index}"
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # TXT extractor
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 
 def extract_from_text(text: str, *, doc_id_prefix: str = "b") -> list[Block]:
-    """Extract a single coarse text block from raw text.
+    """Extract a single coarse block from plain text.
 
-    The entire input text is returned as one ``paragraph``-type block.
-    Fine-grained splitting (headings, bullets, paragraph boundaries) is
-    performed by the LLM semantic parser in Step 6.1.3.
-
-    Parameters
-    ----------
-    text:
-        Raw text content, typically loaded from a ``.txt`` file.
-    doc_id_prefix:
-        Prefix used when generating the block identifier (default ``"b"``).
-
-    Returns
-    -------
-    list[Block]
-        Zero or one block depending on whether the input is empty.
+    The entire text blob becomes a single page-1 paragraph block.
+    Semantic segmentation is delegated to the LLM parser.
     """
     cleaned = (text or "").strip()
     if not cleaned:
@@ -151,9 +90,9 @@ def extract_from_text(text: str, *, doc_id_prefix: str = "b") -> list[Block]:
     return [block]
 
 
-# ===========================================================================
-# PDF extractor
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# PDF extractor — *lazy import*, avoids CI breakage
+# ---------------------------------------------------------------------------
 
 
 def extract_from_pdf(
@@ -161,62 +100,55 @@ def extract_from_pdf(
     *,
     doc_id_prefix: str = "b",
 ) -> list[Block]:
-    """Extract coarse paragraph blocks from a PDF document.
-
-    PDF extraction uses :mod:`pdfplumber` to obtain page text. This
-    extractor:
-
-    - Emits at most one block per page.
-    - Ignores empty pages.
-    - Does *not* attempt layout analysis or table extraction.
-
-    Parameters
-    ----------
-    path:
-        Path to the PDF file.
-    doc_id_prefix:
-        Prefix used for block identifiers.
-
-    Returns
-    -------
-    list[Block]
-        One block per non-empty PDF page.
+    """Extract coarse text blocks from a PDF file.
 
     Notes
     -----
-    Complex PDFs may require enhanced extraction strategies (tables,
-    figures, multi-column layout) which can be layered onto this module
-    in later steps.
+    - ``pdfplumber`` is imported lazily inside this function.
+    - If the optional dependency is not installed, a clear RuntimeError
+      is raised, but importing this module remains safe.
     """
     pdf_path = _normalize_path(path)
+
+    try:
+        import pdfplumber  # lazy import
+    except Exception as exc:  # pragma: no cover (CI stability)
+        raise RuntimeError(
+            "PDF extraction requires the optional 'pdfplumber' dependency. "
+            "Install it with: pip install pdfplumber"
+        ) from exc
+
     blocks: list[Block] = []
 
     with pdfplumber.open(pdf_path) as pdf:
-        for page_index, page in enumerate(pdf.pages, start=1):
-            text = (page.extract_text() or "").strip()
-            if not text:
+        for page_idx, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            cleaned = text.strip()
+            if not cleaned:
                 continue
 
-            block = Block(
-                id=_make_block_id(page_index, prefix=doc_id_prefix),
-                type="paragraph",
-                page=page_index,
-                text=text,
-                caption=None,
-                key_points=None,
-                image_path=None,
-                table_cells=None,
-                bbox=None,
-                provenance=None,
+            block_id = _make_block_id(page_idx, prefix=doc_id_prefix)
+            blocks.append(
+                Block(
+                    id=block_id,
+                    type="paragraph",
+                    page=page_idx,
+                    text=cleaned,
+                    caption=None,
+                    key_points=None,
+                    image_path=None,
+                    table_cells=None,
+                    bbox=None,
+                    provenance=None,
+                )
             )
-            blocks.append(block)
 
     return blocks
 
 
-# ===========================================================================
-# DOCX extractor
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# DOCX extractor — *lazy import*, avoids hard dependency
+# ---------------------------------------------------------------------------
 
 
 def extract_from_docx(
@@ -224,35 +156,22 @@ def extract_from_docx(
     *,
     doc_id_prefix: str = "b",
 ) -> list[Block]:
-    """Extract coarse text blocks from a Word (``.docx``) document.
+    """Extract coarse text from a DOCX file.
 
-    Strategy
-    --------
-    - All paragraphs are read from the :class:`Document` object.
-    - Empty paragraphs are ignored.
-    - Non-empty paragraphs are concatenated with double newlines.
-    - The result is emitted as one ``paragraph`` block.
-
-    Parameters
-    ----------
-    path:
-        Path to the DOCX file.
-    doc_id_prefix:
-        Prefix for block identifiers.
-
-    Returns
-    -------
-    list[Block]
-        A list containing zero or one block.
-
-    Notes
-    -----
-    Precise segmentation (headings, subheadings, lists, captions) should
-    be delegated to the LLM semantic parser.
+    All non-empty paragraphs are concatenated into a single page-1 block.
+    The optional ``python-docx`` library is imported lazily.
     """
     docx_path = _normalize_path(path)
-    document = Document(str(docx_path))
 
+    try:
+        import docx  # lazy import
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "DOCX extraction requires the optional 'python-docx' dependency. "
+            "Install it with: pip install python-docx"
+        ) from exc
+
+    document = docx.Document(docx_path)
     paragraphs: Iterable[str] = ((p.text or "").strip() for p in document.paragraphs)
     non_empty = [p for p in paragraphs if p]
 
@@ -275,9 +194,9 @@ def extract_from_docx(
     return [block]
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # Image extractor
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 
 def extract_from_image(
@@ -285,28 +204,10 @@ def extract_from_image(
     *,
     doc_id_prefix: str = "fig",
 ) -> list[Block]:
-    """Wrap an image as a figure-type block.
+    """Wrap an image file as a figure-type block.
 
-    No decoding or OCR is performed. The block simply records the absolute
-    path to the image. Any semantic interpretation (caption generation,
-    table detection, diagram understanding) is deferred.
-
-    Parameters
-    ----------
-    path:
-        Path to the image file.
-    doc_id_prefix:
-        Prefix used when generating block identifiers (default ``"fig"``).
-
-    Returns
-    -------
-    list[Block]
-        A list containing exactly one ``figure`` block.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the image path does not exist.
+    No OCR or visual interpretation is attempted here. That work is left
+    to the semantic parser. This function only records the file path.
     """
     img_path = _normalize_path(path)
 
