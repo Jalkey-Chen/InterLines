@@ -13,273 +13,256 @@ These tests exercise the wiring in ``interlines.pipelines.public_translation``:
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-import pytest  # type: ignore[import-not-found]
-
+import interlines.pipelines.public_translation as pipeline_mod
 from interlines.core.blackboard.memory import Blackboard
+from interlines.core.planner.strategy import expected_path
 from interlines.core.result import ok
-from interlines.pipelines import public_translation as pipeline_mod
 from interlines.pipelines.public_translation import (
-    PIPELINE_BRIEF_TITLE,
     PipelineResult,
+    PublicBriefPayload,
     run_pipeline,
 )
 
-# ---------------------------------------------------------------------------
-# Test mode toggle
-# ---------------------------------------------------------------------------
 
-USE_STUBS = os.getenv("INTERLINES_PIPELINE_TEST_MODE", "stubs") != "real"
-"""
-Whether to stub out LLM-backed agents in pipeline tests.
+def _run_pipeline_with_stubbed_agents(
+    input_text: str,
+    *,
+    enable_history: bool,
+) -> PipelineResult:
+    """Run ``run_pipeline`` with all LLM-dependent agents stubbed out.
 
-- Default (when the env var is unset or not "real"): USE_STUBS is True and
-  we use lightweight stubs that avoid network calls and API keys.
-- If you set ``INTERLINES_PIPELINE_TEST_MODE=real``, USE_STUBS becomes False
-  and the tests run against the real agents. In that mode, misconfigured
-  environment variables (e.g. missing OPENAI_API_KEY) will surface as
-  test failures, which is desirable for integration testing.
-"""
+    This helper patches the agent entrypoints imported by the
+    :mod:`public_translation` module so that end-to-end tests can run in
+    environments without API keys or network access.
 
-
-def _patch_pipeline_agents(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch LLM-backed agents in the pipeline module with lightweight stubs.
-
-    If ``USE_STUBS`` is False (i.e. ``INTERLINES_PIPELINE_TEST_MODE=real``
-    is set), this function becomes a no-op and the real agents are used.
-    That lets local developers run integration-style tests that also
-    validate environment configuration and API-key wiring.
+    The stubs intentionally return simple dictionaries and lists instead of
+    full Pydantic models; the pipeline converts everything to JSON-safe
+    ``dict`` objects via ``_artifact_to_dict``.
     """
-    if not USE_STUBS:
-        # Integration mode: do NOT patch; use real agents.
-        return
+    # Work with the module as ``Any`` so mypy does not complain about
+    # attribute existence or type mismatches when monkeypatching in tests.
+    mod_any = cast(Any, pipeline_mod)
+
+    # Save original callables so we can restore them in a ``finally`` block.
+    orig_run_explainer = mod_any.run_explainer
+    orig_run_citizen = mod_any.run_citizen
+    orig_run_jargon = mod_any.run_jargon
+    orig_run_history = mod_any.run_history
+    orig_run_editor = mod_any.run_editor
+    orig_run_brief_builder = mod_any.run_brief_builder
 
     def fake_run_explainer(bb: Blackboard) -> Any:
-        """Stub explainer agent: produce one simple explanation card."""
-        cards: list[dict[str, Any]] = [
-            {
-                "kind": "explanation.v1",
-                "version": "1.0.0",
-                "confidence": 0.9,
-                "claim": "The policy aims to make expert language accessible.",
-                "rationale": (
-                    "The text describes how InterLines translates technical "
-                    "content into public-facing explanations using agents."
-                ),
-                "evidence": [],
-                "summary": None,
-            },
-        ]
-        bb.put("explanations", cards)
-        return ok(cards)
+        """Return a single minimal explanation card as a plain mapping."""
+        card = {
+            "kind": "explanation.stub",
+            "version": "1.0.0",
+            "confidence": 1.0,
+            "claim": "Stub explanation for testing.",
+            "rationale": "This is a stub rationale produced by the test suite.",
+        }
+        return ok([card])
 
     def fake_run_citizen(bb: Blackboard) -> Any:
-        """Stub citizen agent: produce one simple relevance note."""
-        notes: list[dict[str, Any]] = [
-            {
-                "kind": "relevance.v1",
-                "version": "1.0.0",
-                "confidence": 0.8,
-                "audience": "general_public",
-                "title": "Why this matters for everyday readers",
-                "summary": (
-                    "The work helps people understand complex policies "
-                    "without needing expert training."
-                ),
-                "bullets": [
-                    "Makes technical research more accessible.",
-                    "Supports better-informed public debate.",
-                ],
-                "sources": ["p1"],
-            },
-        ]
-        bb.put("relevance_notes", notes)
-        return ok(notes)
-
-    def fake_run_jargon(bb: Blackboard) -> Any:
-        """Stub jargon agent: produce one terminology card."""
-        terms: list[dict[str, Any]] = [
-            {
-                "kind": "term.v1",
-                "version": "1.0.0",
-                "confidence": 0.85,
-                "term": "Blackboard",
-                "definition": (
-                    "A shared in-memory space where agents read and write "
-                    "intermediate artifacts."
-                ),
-                "aliases": ["shared memory"],
-                "examples": [
-                    "The parser writes parsed_chunks to the blackboard.",
-                ],
-                "sources": ["p1"],
-            },
-        ]
-        bb.put("terms", terms)
-        return ok(terms)
-
-    def fake_run_history(bb: Blackboard) -> Any:
-        """Stub history agent: produce one simple timeline event."""
-        events: list[dict[str, Any]] = [
-            {
-                "kind": "timeline_event.v1",
-                "version": "1.0.0",
-                "confidence": 0.7,
-                "when": "2020-01-01",
-                "title": "InterLines concept proposed",
-                "description": (
-                    "Initial idea to coordinate multiple agents " "over a shared blackboard."
-                ),
-                "tags": ["concept"],
-                "sources": ["doc:intro"],
-            },
-        ]
-        bb.put("timeline_events", events)
-        return ok(events)
-
-    def fake_run_editor(bb: Blackboard) -> Any:
-        """Stub editor agent: produce a minimal review report."""
-        report: dict[str, Any] = {
-            "kind": "review_report.v1",
+        """Return one relevance note in dict form."""
+        note = {
+            "kind": "relevance_note.stub",
             "version": "1.0.0",
             "confidence": 0.9,
-            "overall": "pass",
-            "issues": [],
-            "notes": "Stubbed review: no issues detected.",
+            "target": "stub-target",
+            "rationale": "Stub reason why this matters to the reader.",
+            "score": 0.9,
         }
-        bb.put("review_report", report)
+        return ok([note])
+
+    def fake_run_jargon(bb: Blackboard) -> Any:
+        """Return a single terminology card as a dict."""
+        term = {
+            "kind": "term.stub",
+            "version": "1.0.0",
+            "confidence": 0.8,
+            "term": "stub term",
+            "definition": "A placeholder term used only in tests.",
+            "aliases": ["stub-term"],
+            "examples": ["This pipeline uses a stub term in tests."],
+            "sources": [],
+        }
+        return ok([term])
+
+    def fake_run_history(bb: Blackboard) -> Any:
+        """Return zero or one timeline events depending on ``enable_history``."""
+        if not enable_history:
+            return ok([])
+        event = {
+            "kind": "timeline_event.stub",
+            "version": "1.0.0",
+            "confidence": 0.6,
+            "when": "2000-01-01",
+            "title": "Stub historical event",
+            "description": "A fake event used to test the history branch.",
+            "tags": ["test"],
+            "sources": [],
+        }
+        return ok([event])
+
+    def fake_run_editor(bb: Blackboard) -> Any:
+        """Return a minimal review report as a plain mapping."""
+        report = {
+            "kind": "review_report.stub",
+            "version": "1.0.0",
+            "confidence": 1.0,
+            "overall": 1.0,
+            "criteria": {
+                "kind": "review_criteria.stub",
+                "version": "1.0.0",
+                "confidence": 1.0,
+                "readability": 1.0,
+                "factuality": 1.0,
+                "bias": 1.0,
+            },
+            "comments": ["All checks passed in the stubbed editor."],
+            "actions": [],
+        }
         return ok(report)
 
     def fake_run_brief_builder(
         bb: Blackboard,
         *,
         run_id: str,
-        reports_dir: str | Path | None = None,
+        reports_dir: str | None = None,
     ) -> Any:
-        """Stub brief builder: pretend to generate a Markdown file.
+        """Pretend to write a markdown file and return a fake path."""
+        # We do not touch the filesystem in tests; the pipeline only needs a
+        # string path that can be echoed back to callers.
+        return ok(f"artifacts/reports/{run_id}-stub.md")
 
-        We return a synthetic path wrapped in ``Result.ok``; the pipeline
-        only checks that it can be converted to a string, not that the
-        file actually exists on disk.
-        """
-        path = Path(f"/tmp/{run_id}.md")
-        return ok(path)
+    try:
+        # Install stubs on the module (viewed as ``Any`` for type-checking).
+        mod_any.run_explainer = fake_run_explainer
+        mod_any.run_citizen = fake_run_citizen
+        mod_any.run_jargon = fake_run_jargon
+        mod_any.run_history = fake_run_history
+        mod_any.run_editor = fake_run_editor
+        mod_any.run_brief_builder = fake_run_brief_builder
 
-    # Patch the symbols used by the pipeline.
-    monkeypatch.setattr(pipeline_mod, "run_explainer", fake_run_explainer)
-    monkeypatch.setattr(pipeline_mod, "run_citizen", fake_run_citizen)
-    monkeypatch.setattr(pipeline_mod, "run_jargon", fake_run_jargon)
-    monkeypatch.setattr(pipeline_mod, "run_history", fake_run_history)
-    monkeypatch.setattr(pipeline_mod, "run_editor", fake_run_editor)
-    monkeypatch.setattr(pipeline_mod, "run_brief_builder", fake_run_brief_builder)
+        # Run the real pipeline implementation with our fake agents.
+        return run_pipeline(input_text, enable_history=enable_history)
+    finally:
+        # Restore original functions so that other tests (or callers) are not
+        # affected by our monkeypatching.
+        mod_any.run_explainer = orig_run_explainer
+        mod_any.run_citizen = orig_run_citizen
+        mod_any.run_jargon = orig_run_jargon
+        mod_any.run_history = orig_run_history
+        mod_any.run_editor = orig_run_editor
+        mod_any.run_brief_builder = orig_run_brief_builder
 
 
-def test_run_pipeline_with_history_produces_artifacts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Full pipeline run with history enabled should produce core artifacts."""
-    _patch_pipeline_agents(monkeypatch)
+def test_run_pipeline_with_history_produces_artifacts() -> None:
+    """Full pipeline run (with history) should produce core artifacts.
 
+    This test exercises the public-translation pipeline end-to-end while
+    using stubbed agents to avoid external API dependencies.
+    """
     input_text = (
         "InterLines turns expert language into public language. "
         "It also provides a historical lens over time. "
         "Agents collaborate through a shared blackboard to build layered explanations."
     )
 
-    result: PipelineResult = run_pipeline(input_text, enable_history=True)
+    result: PipelineResult = _run_pipeline_with_stubbed_agents(
+        input_text,
+        enable_history=True,
+    )
 
-    # The blackboard object should be present and typed correctly.
-    bb = result["blackboard"]
-    assert isinstance(bb, Blackboard)
+    # Parsed chunks: non-empty list of strings.
+    parsed = result["parsed_chunks"]
+    assert isinstance(parsed, list)
+    assert parsed
+    assert all(isinstance(x, str) for x in parsed)
 
-    # Parsed chunks should be a non-empty list of strings.
-    parsed_chunks = result["parsed_chunks"]
-    assert isinstance(parsed_chunks, list)
-    assert parsed_chunks, "parsed_chunks should not be empty"
-    assert all(isinstance(chunk, str) for chunk in parsed_chunks)
-
-    # Explanation, relevance, term, and timeline artifacts should be lists of dicts.
+    # Explanation / relevance / term / timeline artifacts: lists of dicts.
     explanations = result["explanations"]
-    relevance_notes = result["relevance_notes"]
+    notes = result["relevance_notes"]
     terms = result["terms"]
-    timeline_events = result["timeline_events"]
+    events = result["timeline_events"]
 
-    for name, value in [
-        ("explanations", explanations),
-        ("relevance_notes", relevance_notes),
-        ("terms", terms),
-        ("timeline_events", timeline_events),
-    ]:
-        assert isinstance(value, list), f"{name} must be a list"
-        assert all(isinstance(item, dict) for item in value), f"{name} items must be dicts"
+    for collection in (explanations, notes, terms, events):
+        assert isinstance(collection, list)
+        assert all(isinstance(x, dict) for x in collection)
 
-    # History was enabled, so we expect at least one timeline event (in stub mode).
-    if USE_STUBS:
-        assert (
-            timeline_events
-        ), "timeline_events should not be empty when history is enabled in stub mode"
+    # Public brief payload: basic shape and title/summary presence.
+    brief: PublicBriefPayload = result["public_brief"]
+    assert isinstance(brief["title"], str)
+    assert brief["title"] != ""
+    assert isinstance(brief["summary"], str)
+    assert brief["summary"] != ""
+    assert isinstance(brief["sections"], list)
+    assert brief["sections"]
 
-    # Review report should be either a dict or None if something failed gracefully.
-    review_report = result["review_report"]
-    assert review_report is None or isinstance(review_report, dict)
-
-    # Public brief payload should expose the basic fields defined in PublicBriefPayload.
-    public_brief = result["public_brief"]
-    assert isinstance(public_brief, dict)
-
-    # Required keys: title / summary / sections.
-    assert "title" in public_brief
-    assert "summary" in public_brief
-    assert "sections" in public_brief
-
-    assert isinstance(public_brief["title"], str)
-    assert isinstance(public_brief["summary"], str)
-    assert isinstance(public_brief["sections"], list)
-
-    # There should be at least one section when explanations are present.
-    if explanations:
-        assert public_brief["sections"], "public_brief.sections should not be empty"
-
-    # Markdown brief path is optional, but if present, it must be a string.
+    # Markdown path: a non-empty string produced by the brief builder.
     md_path = result["public_brief_md_path"]
-    assert md_path is None or isinstance(md_path, str)
+    assert isinstance(md_path, str)
+    assert md_path.endswith("-stub.md")
 
 
-def test_run_pipeline_without_history_has_empty_timeline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Running the pipeline with history disabled should yield an empty timeline."""
-    _patch_pipeline_agents(monkeypatch)
+def test_run_pipeline_without_history_skips_timeline() -> None:
+    """When ``enable_history=False``, the history branch should be skipped."""
+    input_text = "Short text for a non-history run."
 
-    input_text = "Short text for pipeline test."
+    result: PipelineResult = _run_pipeline_with_stubbed_agents(
+        input_text,
+        enable_history=False,
+    )
 
-    result: PipelineResult = run_pipeline(input_text, enable_history=False)
+    events = result["timeline_events"]
+    assert isinstance(events, list)
+    assert events == []
 
-    timeline_events = result["timeline_events"]
-    assert isinstance(timeline_events, list)
-    assert timeline_events == []
-
-    # Public brief should still exist with a title and sections (possibly empty).
-    public_brief = result["public_brief"]
-    assert isinstance(public_brief, dict)
-    assert "title" in public_brief
-    assert isinstance(public_brief["title"], str)
-    assert public_brief["title"] != ""
-
-    # If no explanations are available, the title may fall back to PIPELINE_BRIEF_TITLE.
-    assert public_brief["title"] or PIPELINE_BRIEF_TITLE
+    # The brief should still be produced.
+    brief: PublicBriefPayload = result["public_brief"]
+    assert brief["title"] != ""
+    assert brief["summary"] != ""
 
 
-def test_pipeline_records_final_trace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pipeline should record at least one trace snapshot on the blackboard."""
-    _patch_pipeline_agents(monkeypatch)
+def test_pipeline_records_planner_dag_and_trace() -> None:
+    """Planner DAG payload and trace snapshot should be recorded on the blackboard."""
+    input_text = "Trace and planner DAG test."
+    result: PipelineResult = _run_pipeline_with_stubbed_agents(
+        input_text,
+        enable_history=True,
+    )
+    bb = result["blackboard"]
 
-    result: PipelineResult = run_pipeline(
+    # The planner DAG should be stored under a dedicated key.
+    dag_payload = bb.get("planner_dag")
+    assert isinstance(dag_payload, dict)
+    assert dag_payload["strategy"] == "with_history"
+    assert tuple(dag_payload["topo"]) == expected_path(enable_history=True)
+
+    # A trace snapshot should contain the planner note and the DAG key.
+    snaps = bb.traces()
+    assert snaps
+    notes = [snap.note for snap in snaps]
+    assert "planner: public_translation plan" in notes
+
+    # Inspect the last snapshot that mentions the planner.
+    planner_snaps = [snap for snap in snaps if snap.note == "planner: public_translation plan"]
+    assert planner_snaps
+    last = planner_snaps[-1]
+    data = last.data
+    assert "planner_dag" in data
+    assert isinstance(data["planner_dag"], dict)
+
+
+def test_pipeline_records_final_trace() -> None:
+    """Pipeline should record at least one trace snapshot on the blackboard.
+
+    The final snapshot is expected to correspond to the completion of the
+    public-translation pipeline.
+    """
+    result: PipelineResult = _run_pipeline_with_stubbed_agents(
         "Trace test text.",
         enable_history=False,
     )
@@ -289,7 +272,6 @@ def test_pipeline_records_final_trace(
     assert len(snaps) >= 1
 
     last = snaps[-1]
-    # ``note`` is expected to be a human-readable string.
-    note = getattr(last, "note", None)
-    assert isinstance(note, str)
-    assert "pipeline" in note
+    note: str | None = last.note
+    assert note is not None
+    assert "pipeline: public_translation complete" in note
