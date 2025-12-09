@@ -86,7 +86,6 @@ def test_replan_triggered_on_low_readability() -> None:
         "editor": 0,
     }
 
-    # Fixed (MyPy): Added return type annotation `-> Any`
     def mock_explainer(bb: Blackboard) -> Any:
         call_counts["explainer"] += 1
         return ok([])  # Return empty list of cards
@@ -97,11 +96,15 @@ def test_replan_triggered_on_low_readability() -> None:
 
     def mock_editor(bb: Blackboard) -> Any:
         call_counts["editor"] += 1
+        # Fixed: Explicitly write the report to Blackboard so Pipeline sees it!
+        # The real agent does this; our mock must simulate it.
+        bb.put("review_report", low_quality_report.model_dump())
         return ok(low_quality_report)
 
     # Stub other agents to keep pipeline happy
     mock_parser = MagicMock(return_value=[{"id": "p1", "text": "stub"}])
     mock_jargon = MagicMock(return_value=ok([]))
+    # Note: run_brief_builder returns Result[Path, str], path string inside Result
     mock_brief = MagicMock(return_value=ok("path/to/stub.md"))
     mock_history = MagicMock(return_value=ok([]))
 
@@ -144,7 +147,6 @@ def test_replan_triggered_on_low_readability() -> None:
 
     # A) Verify call counts match the two-phase execution
     # Explainer: 1 (translate) + 1 (explainer_refine) = 2
-    # Fixed (Ruff E501): Broken long line into multiline assertion
     assert (
         call_counts["explainer"] == 2
     ), f"Explainer should run twice. Got {call_counts['explainer']}"
