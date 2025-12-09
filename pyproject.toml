@@ -10,16 +10,16 @@ scripts = { interlines = "interlines.cli:main", "interlines-api" = "interlines.a
 
 # NEW in Step 0.2: runtime dependencies for typed settings
 dependencies = [
-  "docx>=0.2.4",
+  "python-docx>=1.1.0",
   "fastapi>=0.121.1",
   "httpx>=0.28.1",
-  "pdfminer>=20191125",
   "pdfplumber>=0.11.8",
   "pydantic>=2.8.0",
   "pydantic-settings>=2.2.1",
   "python-dotenv>=1.2.1",
   "requests>=2.32.5",
   "uvicorn>=0.38.0",
+  "pdfminer-six>=20251107",
 ]
 
 [tool.uv]
