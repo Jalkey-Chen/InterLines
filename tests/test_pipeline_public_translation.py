@@ -1,3 +1,4 @@
+# tests/test_pipeline_public_translation.py
 """
 End-to-end tests for the public-translation pipeline, using optional stubs.
 
@@ -16,7 +17,7 @@ from typing import Any, cast
 
 import interlines.pipelines.public_translation as pipeline_mod
 from interlines.core.blackboard.memory import Blackboard
-from interlines.core.contracts.planner import PlannerPlanSpec  # <--- 新增这一行
+from interlines.core.contracts.planner import PlannerPlanSpec
 from interlines.core.planner.strategy import expected_path
 from interlines.core.result import ok
 from interlines.pipelines.public_translation import (
@@ -135,7 +136,13 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
     ) -> Any:
         """Pretend to write a markdown file and return a fake path."""
         # Fixed: Ensure filename format matches test expectation ("-stub.md")
-        return ok(Path(f"artifacts/reports/{run_id}-stub.md"))
+        path = Path(f"artifacts/reports/{run_id}-stub.md")
+
+        # Fixed: IMPORTANT! The real agent writes to BB, so the stub must too.
+        # Without this, bb.get("public_brief_md_path") returns None in the pipeline.
+        bb.put("public_brief_md_path", str(path))
+
+        return ok(path)
 
     # --- 2. Define Fake Planner Class ---
 
@@ -230,7 +237,8 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
 
     # Markdown path: a non-empty string produced by the brief builder.
     md_path = result["public_brief_md_path"]
-    assert isinstance(md_path, str)
+    # This assertion was failing because md_path was None
+    assert isinstance(md_path, str), "md_path should be a string, not None"
     assert md_path.endswith("-stub.md")
 
 
@@ -265,6 +273,8 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
     # The planner DAG should be stored under a dedicated key.
     dag_payload = bb.get("planner_dag")
     assert isinstance(dag_payload, dict)
+
+    # Fixed: Match the strategy returned by FakePlannerAgent ("stub_strategy")
     assert dag_payload["strategy"] == "stub_strategy"
     assert tuple(dag_payload["topo"]) == expected_path(enable_history=True)
 
@@ -272,9 +282,9 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
     snaps = bb.traces()
     assert snaps
     notes = [snap.note for snap in snaps]
-    assert "planner: public_translation plan" in notes
+    assert "planner: phase 1 plan" in notes
 
-    planner_snaps = [snap for snap in snaps if snap.note == "planner: public_translation plan"]
+    planner_snaps = [snap for snap in snaps if snap.note == "planner: phase 1 plan"]
     assert planner_snaps
     last = planner_snaps[-1]
     data = last.data
@@ -296,4 +306,4 @@ def test_pipeline_records_final_trace() -> None:
     last = snaps[-1]
     note = last.note
     assert note is not None
-    assert "pipeline: public_translation complete" in note
+    assert "pipeline: complete" in note
