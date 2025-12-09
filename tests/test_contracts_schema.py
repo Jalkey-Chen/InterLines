@@ -95,3 +95,17 @@ def test_review_schema_alignment() -> None:
         ReviewReport.model_json_schema()["title"]
         == _load(SCHEMAS / "review_report.v1.json")["title"]
     )
+
+
+def test_block_schema_alignment() -> None:
+    from interlines.core.contracts.block import Block
+
+    gen = Block.model_json_schema()
+    ref = _load(SCHEMAS / "block.v1.json")
+
+    assert gen["title"] == ref["title"]
+    assert _required(gen) == _required(ref)
+
+    for field in ("id", "type", "page"):
+        assert field in gen["properties"]
+        assert field in ref["properties"]

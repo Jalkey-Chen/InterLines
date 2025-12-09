@@ -180,7 +180,15 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
     parsed = result["parsed_chunks"]
     assert isinstance(parsed, list)
     assert parsed
-    assert all(isinstance(x, str) for x in parsed)
+    assert all(isinstance(x, dict) for x in parsed)
+
+    seg = parsed[0]
+    assert "id" in seg
+    assert "text" in seg
+    # In stub-mode (llm=None), parser_agent does not add page/type metadata.
+    # Therefore we only require id/text here.
+    assert isinstance(seg["id"], str)
+    assert isinstance(seg["text"], str)
 
     # Explanation / relevance / term / timeline artifacts: lists of dicts.
     explanations = result["explanations"]
