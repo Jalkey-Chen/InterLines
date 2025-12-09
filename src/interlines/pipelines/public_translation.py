@@ -1,5 +1,6 @@
+# src/interlines/pipelines/public_translation.py
 """
-Public translation pipeline: from raw text to public-facing artifacts.
+Public translation pipeline: from raw text (or file) to public-facing artifacts.
 
 Milestone
 ---------
@@ -44,6 +45,7 @@ Design Principles
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from interlines.agents.brief_builder import run_brief_builder
@@ -251,7 +253,7 @@ def _build_public_brief_from_explanations(
     )
 
 
-def _execute_step(step: str, input_text: str, bb: Blackboard) -> None:
+def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
     """
     Execute a single logical step in the pipeline.
 
@@ -263,13 +265,15 @@ def _execute_step(step: str, input_text: str, bb: Blackboard) -> None:
     ----------
     step:
         Logical step name from the Planner's ``steps`` or ``replan_steps``.
-    input_text:
-        Raw input text (only used by the Parser).
+    input_data:
+        Raw input text OR file path (passed to the Parser Agent).
     bb:
         Shared blackboard instance.
     """
     if step == "parse":
-        parsed_chunks_raw = parser_agent(input_text, bb)
+        # Pass the raw data (str or Path) to the parser agent.
+        # The parser agent handles file reading/extraction internally.
+        parsed_chunks_raw = parser_agent(input_data, bb)
         bb.put(_PARSED_CHUNKS_KEY, parsed_chunks_raw)
 
     elif step in ("translate", "explainer_refine"):
@@ -322,7 +326,7 @@ def _execute_step(step: str, input_text: str, bb: Blackboard) -> None:
 
 
 def run_pipeline(  # noqa: C901
-    input_text: str,
+    input_data: str | Path,
     enable_history: bool = False,
     use_llm_planner: bool = True,
 ) -> PipelineResult:
@@ -339,8 +343,9 @@ def run_pipeline(  # noqa: C901
 
     Parameters
     ----------
-    input_text:
-        Raw input text to be parsed and translated.
+    input_data:
+        Raw input text OR a pathlib.Path to a file (PDF, DOCX, TXT).
+        The ParserAgent will handle file extraction automatically.
     enable_history:
         User preference for including the history/timeline branch.
     use_llm_planner:
@@ -351,15 +356,33 @@ def run_pipeline(  # noqa: C901
     # 0. Initialization
     # =========================================================================
     bb = Blackboard()
-    bb.put("input_text", input_text)
+    # Store input for observability.
+    # We store it as a string to ensure JSON serializability of the blackboard.
+    bb.put("input_data", str(input_data))
 
     # =========================================================================
     # 1. Phase 1: Initial Planning
     # =========================================================================
+    # Determine context details for the Planner.
+    if isinstance(input_data, Path):
+        doc_kind = input_data.suffix.lower().lstrip(".") or "file"
+        # We don't read the full file just for the planner prompt context,
+        # so we pass 0 or a placeholder size.
+        char_count = 0
+    elif isinstance(input_data, str) and len(input_data) < 256 and Path(input_data).exists():
+        # Heuristic: if string looks like a path, treat it as one.
+        p = Path(input_data)
+        doc_kind = p.suffix.lower().lstrip(".") or "file"
+        char_count = 0
+    else:
+        # Raw text
+        doc_kind = "text"
+        char_count = len(input_data)
+
     ctx = PlannerContext(
         task_type="public_translation",
-        document_kind="generic",
-        approx_char_count=len(input_text),
+        document_kind=doc_kind,
+        approx_char_count=char_count,
         language="en",
         enable_history_requested=enable_history,
     )
@@ -386,10 +409,10 @@ def run_pipeline(  # noqa: C901
     for step in dag.topological_order():
         # Special handling for legacy "narrate" step which implied jargon+citizen
         if step == "narrate":
-            _execute_step("narrate", input_text, bb)
-            _execute_step("jargon", input_text, bb)
+            _execute_step("narrate", input_data, bb)
+            _execute_step("jargon", input_data, bb)
         else:
-            _execute_step(step, input_text, bb)
+            _execute_step(step, input_data, bb)
 
     # =========================================================================
     # 3. Phase 2: Intelligent Replan (Step 5.3)
@@ -426,13 +449,13 @@ def run_pipeline(  # noqa: C901
 
                 # Execute Refinement Steps
                 for step in replan_dag.topological_order():
-                    _execute_step(step, input_text, bb)
+                    _execute_step(step, input_data, bb)
 
                 # If "brief" wasn't explicitly in the replan steps (it usually isn't),
                 # we re-run it now to ensure the Markdown file on disk reflects
                 # the refined content.
                 if "brief" not in replan_spec.replan_steps:
-                    _execute_step("brief", input_text, bb)
+                    _execute_step("brief", input_data, bb)
 
     # =========================================================================
     # 4. Phase 3: Reporting & Final Assembly (Step 5.4)
