@@ -48,9 +48,9 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
     orig_run_history = mod_any.run_history
     orig_run_editor = mod_any.run_editor
     orig_run_brief_builder = mod_any.run_brief_builder
-    orig_planner_cls = mod_any.PlannerAgent  # <--- 保存原始 Planner 类
+    orig_planner_cls = mod_any.PlannerAgent
 
-    # --- 1. Define Fake Functions (Existing) ---
+    # --- 1. Define Fake Functions ---
 
     def fake_run_explainer(bb: Blackboard) -> Any:
         """Return a single minimal explanation card as a plain mapping."""
@@ -130,13 +130,14 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
     def fake_run_brief_builder(
         bb: Blackboard,
         *,
-        run_id: str = "run",  # Fix: match signature expectations
+        run_id: str = "run",
         reports_dir: str | None = None,
     ) -> Any:
         """Pretend to write a markdown file and return a fake path."""
-        return ok(Path("artifacts/reports/stub.md"))
+        # Fixed: Ensure filename format matches test expectation ("-stub.md")
+        return ok(Path(f"artifacts/reports/{run_id}-stub.md"))
 
-    # --- 2. Define Fake Planner Class (NEW) ---
+    # --- 2. Define Fake Planner Class ---
 
     class FakePlannerAgent:
         """A stub planner that returns a deterministic plan without LLMs."""
@@ -166,10 +167,9 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
         mod_any.run_history = fake_run_history
         mod_any.run_editor = fake_run_editor
         mod_any.run_brief_builder = fake_run_brief_builder
-        mod_any.PlannerAgent = FakePlannerAgent  # <--- 注入伪造的 Planner 类
+        mod_any.PlannerAgent = FakePlannerAgent
 
         # Run the real pipeline implementation with our fake agents.
-        # Now run_pipeline will instantiate FakePlannerAgent instead of the real one.
         return run_pipeline(input_text, enable_history=enable_history)
     finally:
         # Restore original functions so that other tests are not affected.
@@ -179,7 +179,7 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
         mod_any.run_history = orig_run_history
         mod_any.run_editor = orig_run_editor
         mod_any.run_brief_builder = orig_run_brief_builder
-        mod_any.PlannerAgent = orig_planner_cls  # <--- 恢复原始 Planner 类
+        mod_any.PlannerAgent = orig_planner_cls
 
 
 def test_run_pipeline_with_history_produces_artifacts() -> None:
