@@ -5,6 +5,7 @@ Milestone
 ---------
 M5 | Planner Agent
 Step 5.3 | Integrated Single-Round Replan
+Step 5.4 | Planner Report & Richer Trace
 
 This module orchestrates the main InterLines "public translation" flow using a
 DAG-driven approach with an optional, intelligent refinement loop.
@@ -24,9 +25,11 @@ Flow Overview
      refinement steps (e.g., ``explainer_refine``, ``citizen_refine``).
    - These steps are executed to update the artifacts on the blackboard.
 
-3. **Phase 3: Final Assembly**
-   - The ``BriefBuilder`` (or fallback logic) assembles the final Markdown.
-   - A JSON-safe ``PipelineResult`` is returned to the caller.
+3. **Phase 3: Reporting & Assembly (Step 5.4)**
+   - A structured :class:`PlanReport` is generated to summarize the decisions
+     (strategy used, whether replan happened, why).
+   - This report is written to the blackboard for observability.
+   - The final brief is assembled and returned.
 
 Design Principles
 -----------------
@@ -34,8 +37,8 @@ Design Principles
   run, but agents control *what* they generate.
 - **Blackboard-Centric**: All state is shared via :class:`Blackboard`, allowing
   the Replan phase to read outputs from the Initial phase.
-- **Traceability**: Every step, including replan decisions, emits a trace
-  snapshot for debugging.
+- **Traceability**: Every step, including replan decisions and final reports,
+  emits a trace snapshot for debugging.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from interlines.agents.parser_agent import parser_agent
 from interlines.agents.planner_agent import PlannerAgent, PlannerContext
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.contracts.explanation import ExplanationCard
+from interlines.core.contracts.planner import PlannerPlanSpec, PlanReport
 from interlines.core.contracts.public_brief import BriefSection, PublicBrief
 from interlines.core.contracts.review import ReviewReport
 from interlines.core.planner.dag import DAG
@@ -77,6 +81,7 @@ _PUBLIC_BRIEF_KEY = "public_brief"
 # Planner provenance keys
 _PLANNER_PLAN_KEY = "planner_plan_spec.initial"
 _PLANNER_REPLAN_KEY = "planner_plan_spec.replan"
+_PLANNER_REPORT_KEY = "planner_report"  # New in Step 5.4
 _PLANNER_DAG_KEY = "planner_dag"
 
 # Fixed (RUF001): Used hyphen-minus instead of ambiguous en-dash.
@@ -123,6 +128,12 @@ def _artifact_to_dict(obj: Any) -> dict[str, Any]:
     The pipeline frequently stores artifacts on the blackboard and inside
     :class:`PipelineResult`. To keep serialization simple and JSON-safe, we
     aggressively convert models to plain dictionaries.
+
+    Supported inputs
+    ----------------
+    - Pydantic v2 models (with ``model_dump``).
+    - ``dict`` instances (returned as-is).
+    - Any object with a ``dict()``-style method (best-effort call).
     """
     if obj is None:
         return {}
@@ -132,18 +143,26 @@ def _artifact_to_dict(obj: Any) -> dict[str, Any]:
         return cast("dict[str, Any]", obj.model_dump())  # pydantic v2
 
     if isinstance(obj, dict):
+        # Shallow copy so callers do not accidentally mutate our state.
         return dict(obj)
 
     if hasattr(obj, "dict"):
+        # Fixed (Mypy): explicit cast.
         return cast("dict[str, Any]", obj.dict())
 
+    # Very defensive fallback: make a tiny best-effort dict.
     return {"value": obj}
 
 
 def _as_list(x: Any) -> list[Any]:
     """Normalize ``x`` into a list.
 
-    Handles None, scalar values, and sequences uniformly.
+    - ``None`` → ``[]``
+    - sequence types (except ``str``/``bytes``) → list(x)
+    - everything else → ``[x]``
+
+    This is mainly used when reading from the blackboard, where callers may
+    have stored either a single artifact or a collection.
     """
     if x is None:
         return []
@@ -156,11 +175,21 @@ def _as_list(x: Any) -> list[Any]:
 def _unwrap_or_fail(stage: str, result: Result[Any, str]) -> Any:
     """Extract the value from a :class:`Result` or raise a RuntimeError.
 
-    In this prototype, we treat agent failures as hard stops to surface bugs
-    early in tests.
+    In the current prototype we treat failures as hard errors rather than
+    trying to repair mid-pipeline. This makes bugs surface quickly in tests
+    and keeps the control flow readable.
+
+    Parameters
+    ----------
+    stage:
+        Human-readable label of the agent or step, used only for error
+        messages and traces.
+    result:
+        A :class:`Result` returned by one of the agents.
     """
     if result.is_ok():
         return result.unwrap()
+    # Include the failing stage in the error message to ease debugging.
     raise RuntimeError(f"{stage} failed: {result.unwrap_err()}")
 
 
@@ -173,6 +202,13 @@ def _build_public_brief_from_explanations(
     This helper synthesizes a structured brief object even if the
     ``brief_builder`` agent (which writes Markdown to disk) was not invoked
     or if we just need the in-memory representation for the API response.
+
+    The logic is deliberately simple:
+
+    - Use ``summary`` or ``text`` from the explanation cards to form a
+      multi-paragraph summary.
+    - Group cards by a coarse ``topic`` field (if present).
+    - Turn each group into a :class:`BriefSection` with bullet-style lines.
     """
     raw = [_artifact_to_dict(c) for c in cards]
 
@@ -358,8 +394,8 @@ def run_pipeline(  # noqa: C901
     # =========================================================================
     # 3. Phase 2: Intelligent Replan (Step 5.3)
     # =========================================================================
-    # Only attempt replan if we have an LLM planner and a review report exists.
     review_report_raw = bb.get(_REVIEW_REPORT_KEY)
+    replan_spec: PlannerPlanSpec | None = None
 
     if use_llm_planner and planner_agent and review_report_raw:
         # Reconstruct ReviewReport object for the Planner
@@ -399,8 +435,24 @@ def run_pipeline(  # noqa: C901
                     _execute_step("brief", input_text, bb)
 
     # =========================================================================
-    # 4. Final Assembly & Return
+    # 4. Phase 3: Reporting & Final Assembly (Step 5.4)
     # =========================================================================
+    # Generate the executive summary of the planner's decisions.
+    # This provides a single source of truth for "what strategy ran?".
+    plan_report = PlanReport(
+        strategy=plan_spec.strategy,
+        enable_history=plan_spec.enable_history,
+        initial_steps=plan_spec.steps,
+        replan_steps=replan_spec.replan_steps
+        if (replan_spec and replan_spec.should_replan)
+        else None,
+        refine_used=replan_spec.should_replan if replan_spec else False,
+        replan_reason=replan_spec.replan_reason if replan_spec else None,
+        notes=plan_spec.notes,
+    )
+    bb.put(_PLANNER_REPORT_KEY, plan_report.model_dump())
+    bb.trace("planner: report written")
+
     # Fetch final state (potentially updated by Phase 2)
     explanations_raw = _as_list(bb.get(_EXPLANATIONS_KEY))
     notes_raw = _as_list(bb.get(_RELEVANCE_NOTES_KEY))
