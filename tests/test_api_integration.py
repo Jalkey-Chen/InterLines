@@ -150,7 +150,7 @@ def test_pipeline_failure_handling(client: TestClient) -> None:
         mock_run.side_effect = RuntimeError("Simulated Pipeline Crash")
 
         # Submit
-        resp = client.post("/interpret", json={"text": "Crash me"})
+        resp = client.post("/interpret", json={"text": "Crash me please, make it longer"})
         assert resp.status_code == 202
         job_id = resp.json()["job_id"]
 
