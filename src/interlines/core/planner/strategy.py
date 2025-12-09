@@ -39,17 +39,20 @@ def build_plan(enable_history: bool) -> tuple[PlannerPlanSpec, DAG]:
     """
     if enable_history:
         steps = ["parse", "translate", "timeline", "narrate", "review", "brief"]
+        strategy = "with_history"
     else:
         steps = ["parse", "translate", "narrate", "review", "brief"]
+        strategy = "no_history"
 
     plan_spec = PlannerPlanSpec(
+        strategy=strategy,
         steps=steps,
         enable_history=enable_history,
         notes=None,
     )
 
     # legacy DAG-compatible structure (unchanged)
-    dag = DAG(strategy="with_history" if enable_history else "no_history")
+    dag = DAG(strategy=strategy)
 
     dag.add("parse", "translate")
     if enable_history:

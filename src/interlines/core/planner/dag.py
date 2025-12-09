@@ -129,7 +129,7 @@ class DAG:
         Commit 1: This implementation is intentionally minimal and linear:
         step[i] → step[i+1]
         """
-        dag = cls(strategy="from_plan_spec")
+        dag = cls(strategy=plan.strategy)
 
         # Create nodes
         for step in plan.steps:
