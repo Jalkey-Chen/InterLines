@@ -1,11 +1,11 @@
-# src/interlines/core/contracts/planner.py
 """
-PlannerPlanSpec — the structured, model-driven representation of a
-pipeline plan for the public-translation workflow.
+Planner contracts: Specifications and Reports for pipeline orchestration.
 
-This module formalizes the planner's output. It now includes support for
-single-round replanning (Step 5.3), allowing the planner to inspect a
-ReviewReport and trigger a targeted refinement pass.
+This module defines the data structures used by the Planner Agent to control
+and report on the pipeline execution flow.
+
+- :class:`PlannerPlanSpec`: The "forward-looking" instruction set (what to do).
+- :class:`PlanReport`: The "backward-looking" summary (what was decided).
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ ALLOWED_REFINE_STEPS: frozenset[str] = frozenset(
 
 
 # --------------------------------------------------------------------------- #
-# Data Model
+# Data Model: Instruction Spec (Forward-looking)
 # --------------------------------------------------------------------------- #
 
 
@@ -41,7 +41,7 @@ class PlannerPlanSpec(BaseModel):
     """
     A high-level, ordered plan for executing the public-translation pipeline.
 
-    This model now supports a two-stage execution:
+    This model supports a two-stage execution:
     1. **Initial execution**: Defined by ``steps``.
     2. **Optional replan**: Defined by ``should_replan`` and ``replan_steps``.
 
@@ -56,13 +56,11 @@ class PlannerPlanSpec(BaseModel):
     notes:
         Optional natural-language rationale for the plan.
     should_replan:
-        Flag indicating if a second pass is required. Defaults to False.
+        Flag indicating if a refinement pass is triggered based on review.
     replan_steps:
         Ordered list of steps to execute during the refinement pass.
-        Must be a subset of :data:`ALLOWED_REFINE_STEPS`.
     replan_reason:
-        Rationale for triggering (or not triggering) a replan, usually based
-        on specific issues found in the ReviewReport.
+        Rationale for the replan decision.
     """
 
     # --- Initial Plan Configuration ---
@@ -102,8 +100,47 @@ class PlannerPlanSpec(BaseModel):
     )
 
     # Expose the constant on the class for convenient access in validators
-    # or downstream logic.
     ALLOWED_STEPS: ClassVar[frozenset[str]] = ALLOWED_REFINE_STEPS
 
 
-__all__ = ["PlannerPlanSpec", "ALLOWED_REFINE_STEPS"]
+# --------------------------------------------------------------------------- #
+# Data Model: Executive Summary (Backward-looking)
+# --------------------------------------------------------------------------- #
+
+
+class PlanReport(BaseModel):
+    """
+    Structured summary of the Planner's decisions for a pipeline run.
+
+    Unlike :class:`PlannerPlanSpec`, which drives execution, this model is
+    intended for observability, debugging, and final reporting. It aggregates
+    decisions from both the initial phase and any subsequent refinement loops.
+
+    Fields
+    ------
+    strategy:
+        The strategy label used (e.g., "rule_planner.v1", "llm_planner.v1").
+    enable_history:
+        Final status of the history branch.
+    initial_steps:
+        The steps executed in Phase 1.
+    replan_steps:
+        The steps executed in Phase 2 (if any).
+    refine_used:
+        Boolean flag indicating if a refinement loop actually occurred.
+    replan_reason:
+        The rationale provided for triggering (or skipping) refinement.
+    notes:
+        General planning notes or rationale.
+    """
+
+    strategy: str
+    enable_history: bool
+    initial_steps: list[str]
+    replan_steps: list[str] | None = None
+    refine_used: bool = False
+    replan_reason: str | None = None
+    notes: str | None = None
+
+
+__all__ = ["PlannerPlanSpec", "PlanReport", "ALLOWED_REFINE_STEPS"]
