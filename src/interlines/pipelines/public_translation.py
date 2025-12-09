@@ -1,4 +1,3 @@
-# src/interlines/pipelines/public_translation.py
 """
 Public translation pipeline: from raw text (or file) to public-facing artifacts.
 
@@ -83,7 +82,7 @@ _PUBLIC_BRIEF_KEY = "public_brief"
 # Planner provenance keys
 _PLANNER_PLAN_KEY = "planner_plan_spec.initial"
 _PLANNER_REPLAN_KEY = "planner_plan_spec.replan"
-_PLANNER_REPORT_KEY = "planner_report"  # New in Step 5.4
+_PLANNER_REPORT_KEY = "planner_report"
 _PLANNER_DAG_KEY = "planner_dag"
 
 # Fixed (RUF001): Used hyphen-minus instead of ambiguous en-dash.
@@ -253,7 +252,12 @@ def _build_public_brief_from_explanations(
     )
 
 
-def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
+def _execute_step(
+    step: str,
+    input_data: str | Path,
+    bb: Blackboard,
+    worker_llm: LLMClient | None = None,
+) -> None:
     """
     Execute a single logical step in the pipeline.
 
@@ -269,12 +273,16 @@ def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
         Raw input text OR file path (passed to the Parser Agent).
     bb:
         Shared blackboard instance.
+    worker_llm:
+        Optional LLM client for agents that require it (e.g., Parser).
+        If not provided, agents may fall back to stub mode.
     """
     if step == "parse":
-        # Pass the raw data (str or Path) to the parser agent.
-        # The parser agent handles file reading/extraction internally.
-        parsed_chunks_raw = parser_agent(input_data, bb)
+        # Fixed: Pass the LLM to the parser so it runs in Semantic Mode, not Stub Mode.
+        # This uses the "balanced" (or "planner") model to intelligently split PDFs.
+        parsed_chunks_raw = parser_agent(input_data, bb, llm=worker_llm)
         bb.put(_PARSED_CHUNKS_KEY, parsed_chunks_raw)
+        # Parser typically traces itself, but we can add a pipeline-level trace if needed.
 
     elif step in ("translate", "explainer_refine"):
         # "translate" = Initial Pass
@@ -284,6 +292,7 @@ def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
         cards = _unwrap_or_fail("explainer_agent", explainer_result)
         # Explicit write-back ensures clarity, though agents usually do it.
         bb.put(_EXPLANATIONS_KEY, [_artifact_to_dict(c) for c in cards])
+        bb.trace(f"pipeline: step '{step}' finished ({len(cards)} cards)")
 
     elif step in ("narrate", "citizen_refine"):
         # "narrate" = Initial Pass
@@ -291,6 +300,7 @@ def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
         citizen_result = run_citizen(bb)
         notes = _unwrap_or_fail("citizen_agent", citizen_result)
         bb.put(_RELEVANCE_NOTES_KEY, [_artifact_to_dict(n) for n in notes])
+        bb.trace(f"pipeline: step '{step}' finished ({len(notes)} notes)")
 
     elif step in ("jargon", "jargon_refine"):
         # Note: In legacy DAGs, "jargon" is often grouped with "narrate",
@@ -298,26 +308,31 @@ def _execute_step(step: str, input_data: str | Path, bb: Blackboard) -> None:
         jargon_result = run_jargon(bb)
         terms = _unwrap_or_fail("jargon_agent", jargon_result)
         bb.put(_TERMS_KEY, [_artifact_to_dict(t) for t in terms])
+        bb.trace(f"pipeline: step '{step}' finished ({len(terms)} terms)")
 
     elif step in ("timeline", "history_refine"):
         history_result = run_history(bb)
         events = _unwrap_or_fail("history_agent", history_result)
         bb.put(_TIMELINE_KEY, [_artifact_to_dict(ev) for ev in events])
+        bb.trace(f"pipeline: step '{step}' finished ({len(events)} events)")
 
     elif step == "review":
         # Initial review pass
         _res = run_editor(bb)
         _unwrap_or_fail("editor_agent", _res)
+        bb.trace("pipeline: step 'review' finished")
 
     elif step == "editor":
         # Re-review pass during refinement (verifies fixes)
         _res = run_editor(bb)
         _unwrap_or_fail("editor_agent (replan)", _res)
+        bb.trace("pipeline: step 'editor' (recheck) finished")
 
     elif step == "brief":
         # Fixed (Mypy): Use distinct variable to avoid type conflict with _res above.
         _brief_res = run_brief_builder(bb)
         _unwrap_or_fail("brief_builder_agent", _brief_res)
+        bb.trace("pipeline: step 'brief' finished")
 
 
 # --------------------------------------------------------------------------- #
@@ -360,6 +375,10 @@ def run_pipeline(  # noqa: C901
     # We store it as a string to ensure JSON serializability of the blackboard.
     bb.put("input_data", str(input_data))
 
+    # Initialize a shared LLM client for agents that need it (Parser, Planner).
+    # We use 'planner' alias as a safe default for logic tasks.
+    worker_llm = LLMClient.from_env(default_model_alias="planner")
+
     # =========================================================================
     # 1. Phase 1: Initial Planning
     # =========================================================================
@@ -390,7 +409,7 @@ def run_pipeline(  # noqa: C901
 
     if use_llm_planner:
         # Use LLM-backed planner for dynamic routing
-        planner_agent = PlannerAgent(llm=LLMClient.from_env(default_model_alias="planner"))
+        planner_agent = PlannerAgent(llm=worker_llm)
         plan_spec = planner_agent.plan(bb, ctx)
     else:
         # Fallback to deterministic rules (Legacy Step 5.1)
@@ -409,10 +428,10 @@ def run_pipeline(  # noqa: C901
     for step in dag.topological_order():
         # Special handling for legacy "narrate" step which implied jargon+citizen
         if step == "narrate":
-            _execute_step("narrate", input_data, bb)
-            _execute_step("jargon", input_data, bb)
+            _execute_step("narrate", input_data, bb, worker_llm)
+            _execute_step("jargon", input_data, bb, worker_llm)
         else:
-            _execute_step(step, input_data, bb)
+            _execute_step(step, input_data, bb, worker_llm)
 
     # =========================================================================
     # 3. Phase 2: Intelligent Replan (Step 5.3)
@@ -449,13 +468,13 @@ def run_pipeline(  # noqa: C901
 
                 # Execute Refinement Steps
                 for step in replan_dag.topological_order():
-                    _execute_step(step, input_data, bb)
+                    _execute_step(step, input_data, bb, worker_llm)
 
                 # If "brief" wasn't explicitly in the replan steps (it usually isn't),
                 # we re-run it now to ensure the Markdown file on disk reflects
                 # the refined content.
                 if "brief" not in replan_spec.replan_steps:
-                    _execute_step("brief", input_data, bb)
+                    _execute_step("brief", input_data, bb, worker_llm)
 
     # =========================================================================
     # 4. Phase 3: Reporting & Final Assembly (Step 5.4)
