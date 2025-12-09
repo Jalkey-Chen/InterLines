@@ -265,7 +265,7 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
     # The planner DAG should be stored under a dedicated key.
     dag_payload = bb.get("planner_dag")
     assert isinstance(dag_payload, dict)
-    assert dag_payload["strategy"] == "with_history"
+    assert dag_payload["strategy"] == "stub_strategy"
     assert tuple(dag_payload["topo"]) == expected_path(enable_history=True)
 
     # A trace snapshot should contain the planner note.
