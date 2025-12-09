@@ -1,4 +1,3 @@
-# src/interlines/pipelines/public_translation.py
 """
 Public translation pipeline: from raw text to public-facing artifacts.
 
@@ -29,17 +28,14 @@ The public-translation pipeline is intended to be:
 
 - **Deterministic at the orchestration layer**:
   The "planner" decides which agents to invoke and in what order
-  (now DAG-driven), while each agent is free to use non-deterministic
-  sampling internally.
-
+  (possibly using a DAG in later milestones), while each agent is free
+  to use non-deterministic sampling internally.
 - **LLM-provider-agnostic**:
   Agents talk to the LLM client through well-defined contracts. This
   module does not depend on concrete model IDs.
-
 - **Blackboard-centric**:
-  All intermediate artifacts (parsed chunks, explanations, terms,
-  timeline events, review reports, etc.) are stored on a central
-  :class:`Blackboard` to simplify inspection, reproducibility, and
+  All intermediate artifacts (parsed chunks, explanations, terms, etc.)
+  are stored on a central :class:`Blackboard` to simplify inspection and
   downstream processing.
 
 Entry point
@@ -48,137 +44,190 @@ The main entry point is :func:`run_pipeline`, which returns a
 JSON-safe ``PipelineResult`` containing:
 
 - The shared :class:`Blackboard` instance.
-- Structured parser output: ``list[dict]``.
-- Explanation, relevance, term, and timeline artifacts as dicts.
-- A ``PublicBrief`` payload (converted to plain dict).
-- A Markdown brief path (if brief-builder succeeds).
+- Parsed chunks as a list of ``{"id": ..., "text": ...}`` dicts.
+- Explanation / relevance / term / timeline artifacts as dicts.
+- A structured ``PublicBrief`` payload built from explanations.
+- The path to a generated Markdown brief (if any).
 
-This version (Commit 2 ⋅ Step 5.1) replaces the previous hard-coded
-execution order with a **DAG-driven orchestration layer**, enabling
-dynamic replanning in future milestones (e.g., LLM-backed PlannerAgent).
+In Step 5.2 the planner becomes pluggable:
+
+- ``use_llm_planner=False`` keeps the rule-based planner from Step 5.1.
+- ``use_llm_planner=True`` (default) routes through :class:`PlannerAgent`,
+  which asks an LLM to propose a plan (steps, thresholds, notes) and then
+  converts it into a :class:`DAG` for execution.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, TypedDict, cast
 
-# Agent imports
-from interlines.agents.brief_builder import (
-    _PUBLIC_BRIEF_MD_KEY,
-    run_brief_builder,
-)
+from interlines.agents.brief_builder import run_brief_builder
 from interlines.agents.citizen_agent import run_citizen
 from interlines.agents.editor_agent import run_editor
 from interlines.agents.explainer_agent import run_explainer
 from interlines.agents.history_agent import run_history
 from interlines.agents.jargon_agent import run_jargon
 from interlines.agents.parser_agent import parser_agent
-
-# Core imports
+from interlines.agents.planner_agent import PlannerAgent, PlannerContext
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.contracts.explanation import ExplanationCard
 from interlines.core.contracts.public_brief import BriefSection, PublicBrief
 from interlines.core.contracts.relevance import RelevanceNote
-from interlines.core.contracts.review import ReviewReport
 from interlines.core.contracts.term import TermCard
 from interlines.core.contracts.timeline import TimelineEvent
 from interlines.core.planner.dag import DAG
 from interlines.core.planner.strategy import build_plan
 from interlines.core.result import Result
+from interlines.llm.client import LLMClient
 
-# Blackboard keys
+# --------------------------------------------------------------------------- #
+# Blackboard keys and constants
+# --------------------------------------------------------------------------- #
+
+# Keys used to stash artifacts on the blackboard. These are intentionally
+# simple strings so that they are easy to inspect in traces and tests.
 _PARSED_CHUNKS_KEY = "parsed_chunks"
 _EXPLANATIONS_KEY = "explanations"
 _RELEVANCE_NOTES_KEY = "relevance_notes"
 _TERMS_KEY = "terms"
 _TIMELINE_KEY = "timeline_events"
 _PUBLIC_BRIEF_KEY = "public_brief"
+_PLANNER_PLAN_KEY = "planner_plan_spec.initial"
+_PLANNER_DAG_KEY = "planner_dag"
 
-PIPELINE_BRIEF_TITLE = "InterLines Public Brief"
+# Title used for auto-constructed briefs when the brief-builder agent is not
+# invoked (e.g., in very small test cases).
+# Fixed (RUF001): Used hyphen-minus instead of ambiguous en-dash.
+PIPELINE_BRIEF_TITLE = "InterLines - Public Brief"
 
 
-# ---------------------------------------------------------------------------
-# JSON-safe output payload types
-# ---------------------------------------------------------------------------
-
-
-class BriefSectionPayload(TypedDict):
-    heading: str
-    body: str
-    bullets: list[str]
+# --------------------------------------------------------------------------- #
+# Public result types
+# --------------------------------------------------------------------------- #
 
 
 class PublicBriefPayload(TypedDict):
+    """JSON-safe subset of :class:`PublicBrief` exposed by the pipeline."""
+
     title: str
     summary: str
-    sections: list[BriefSectionPayload]
+    sections: list[Mapping[str, object]]
 
 
 class PipelineResult(TypedDict):
+    """Structured payload returned by :func:`run_pipeline`.
+
+    This mirrors what a future HTTP API or CLI might marshal into JSON.
+    """
+
     blackboard: Blackboard
-    parsed_chunks: list[dict[str, Any]]
-    explanations: list[dict[str, Any]]
-    relevance_notes: list[dict[str, Any]]
-    terms: list[dict[str, Any]]
-    timeline_events: list[dict[str, Any]]
-    review_report: dict[str, Any] | None
+    parsed_chunks: list[Mapping[str, object]]
+    explanations: list[Mapping[str, object]]
+    relevance_notes: list[Mapping[str, object]]
+    terms: list[Mapping[str, object]]
+    timeline_events: list[Mapping[str, object]]
     public_brief: PublicBriefPayload
     public_brief_md_path: str | None
 
 
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
 
 
 def _artifact_to_dict(obj: Any) -> dict[str, Any]:
-    """
-    Convert structured artifacts to plain Python dicts.
+    """Convert a Pydantic model or plain mapping into a regular ``dict``.
 
-    The pipeline must be JSON-safe. Agent outputs may be:
-    - Pydantic models (with ``model_dump``)
-    - Dataclasses
-    - Existing dicts
-    - Unknown objects (fallback: repr)
+    The pipeline frequently stores artifacts on the blackboard and inside
+    :class:`PipelineResult`. To keep serialization simple and JSON-safe, we
+    aggressively convert models to plain dictionaries.
 
-    This helper centralizes the logic and keeps run_pipeline readable.
+    Supported inputs
+    ----------------
+    - Pydantic v2 models (with ``model_dump``).
+    - ``dict`` instances (returned as-is).
+    - Any object with a ``dict()``-style method (best-effort call).
     """
-    if isinstance(obj, Mapping):
-        return dict(obj)
+    if obj is None:
+        return {}
+
     if hasattr(obj, "model_dump"):
-        return cast(dict[str, Any], obj.model_dump())
-    if hasattr(obj, "__dict__"):
-        return dict(vars(obj))
-    return {"value": repr(obj)}
+        # Fixed (Mypy): explicit cast for stricter return type checking.
+        return cast("dict[str, Any]", obj.model_dump())  # pydantic v2
+
+    if isinstance(obj, dict):
+        # Shallow copy so callers do not accidentally mutate our state.
+        return dict(obj)
+
+    if hasattr(obj, "dict"):
+        # Fixed (Mypy): explicit cast.
+        return cast("dict[str, Any]", obj.dict())
+
+    # Very defensive fallback: make a tiny best-effort dict.
+    return {"value": obj}
 
 
-def _as_list(x: Any | Sequence[Any]) -> list[Any]:
-    """Normalize possibly-scalar values into lists."""
+def _as_list(x: Any) -> list[Any]:
+    """Normalize ``x`` into a list.
+
+    - ``None`` → ``[]``
+    - sequence types (except ``str``/``bytes``) → list(x)
+    - everything else → ``[x]``
+
+    This is mainly used when reading from the blackboard, where callers may
+    have stored either a single artifact or a collection.
+    """
     if x is None:
         return []
+    # Fixed (UP038): Use `|` union syntax for isinstance checks.
     if isinstance(x, Sequence) and not isinstance(x, str | bytes):
         return list(x)
     return [x]
 
 
-def _unwrap_or_fail(label: str, result: Result[Any, Any]) -> Any:
-    """
-    Extract the success value from a :class:`Result`.
+def _unwrap_or_fail(stage: str, result: Result[Any, str]) -> Any:
+    """Extract the value from a :class:`Result` or raise a RuntimeError.
 
-    If the agent failed, embed context so failures are easy to debug.
+    In the current prototype we treat failures as hard errors rather than
+    trying to repair mid-pipeline. This makes bugs surface quickly in tests
+    and keeps the control flow readable.
+
+    Parameters
+    ----------
+    stage:
+        Human-readable label of the agent or step, used only for error
+        messages and traces.
+    result:
+        A :class:`Result` returned by one of the agents.
     """
     if result.is_ok():
         return result.unwrap()
-    raise RuntimeError(f"{label} failed: {result.unwrap_err()}")
+    # Include the failing stage in the error message to ease debugging.
+    raise RuntimeError(f"{stage} failed: {result.unwrap_err()}")
 
 
-def _build_public_brief_from_explanations(cards: list[ExplanationCard]) -> PublicBrief:
+# --------------------------------------------------------------------------- #
+# Brief construction (fallback when brief-builder is not used)
+# --------------------------------------------------------------------------- #
+
+
+def _build_public_brief_from_explanations(
+    cards: list[ExplanationCard],
+) -> PublicBrief:
     """
     Construct a :class:`PublicBrief` from explanation cards.
 
     This function is intentionally pure and testable. It mirrors what a
     future LLM agent *might* produce when assembling narrative structure.
+
+    The logic is deliberately simple:
+
+    - Use ``summary`` or ``text`` from the explanation cards to form a
+      multi-paragraph summary.
+    - Group cards by a coarse ``topic`` field (if present).
+    - Turn each group into a :class:`BriefSection` with bullet-style lines.
     """
     raw = [_artifact_to_dict(c) for c in cards]
 
@@ -222,174 +271,180 @@ def _build_public_brief_from_explanations(cards: list[ExplanationCard]) -> Publi
     )
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 # DAG-driven pipeline entry point
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 
 
-# ruff: noqa: C901
-def run_pipeline(input_text: str, enable_history: bool = False) -> PipelineResult:
+def run_pipeline(
+    input_text: str,
+    enable_history: bool = False,
+    use_llm_planner: bool = True,
+) -> PipelineResult:
     """
-    Run the entire public-translation workflow under DAG orchestration.
+    DAG-driven pipeline entry point for the public-translation workflow.
 
-    Steps (determined by planner):
-        parse → translate → (timeline) → narrate → review → brief
-
-    The DAG execution loop ensures the pipeline is:
-    - extensible (new steps can be added without rewriting run_pipeline)
-    - introspectable (planner_dag recorded in blackboard)
-    - ready for LLM-driven dynamic replanning in future milestones.
+    Parameters
+    ----------
+    input_text:
+        Raw input text to be parsed and translated.
+    enable_history:
+        If ``True``, the caller expresses a preference for including the
+        history/timeline branch. The *planner* (rule-based or LLM-backed)
+        may still decide to drop that branch in some cases.
+    use_llm_planner:
+        When ``True`` (default), the high-level execution plan is produced
+        by :class:`PlannerAgent` using an LLM ("semantic routing"). When
+        ``False``, the legacy rule-based planner from Step 5.1 is used as a
+        safe, deterministic fallback.
     """
+    # ------------- Blackboard + initial state -------------
     bb = Blackboard()
+    bb.put("input_text", input_text)
 
-    # ---------------- Planner -----------------
-    plan_spec, _legacy = build_plan(enable_history)
+    # ------------- Planning (rule-based vs LLM-backed) -------------
+    if use_llm_planner:
+        # Build a minimal planning context. This can be enriched later with
+        # more document metadata (e.g., content type, source, user persona).
+        ctx = PlannerContext(
+            task_type="public_translation",
+            document_kind="generic",
+            approx_char_count=len(input_text),
+            language="en",  # TODO: plug in a lightweight language detector.
+            enable_history_requested=enable_history,
+        )
+        # Fixed (Mypy): Use `from_env` for proper initialization defaults.
+        planner = PlannerAgent(llm=LLMClient.from_env(default_model_alias="planner"))
+        plan_spec = planner.plan(bb, ctx)
+    else:
+        # Preserve the legacy rule-based behavior from Step 5.1.
+        plan_spec, _legacy_dag = build_plan(enable_history=enable_history)
+
     dag = DAG.from_plan_spec(plan_spec)
-    bb.put("planner_dag", dag.to_payload())
+
+    # Record both the structured plan and the DAG on the blackboard so that
+    # tests, debug tools, and future UIs can introspect them.
+    bb.put(_PLANNER_PLAN_KEY, plan_spec.model_dump())
+    bb.put(_PLANNER_DAG_KEY, dag.to_payload())
     bb.trace("planner: public_translation plan")
 
-    # ---------------- State -------------------
-    parsed_chunks: list[dict[str, Any]] = []
+    # ------------- Execute agents along DAG -------------
     explanation_cards: list[ExplanationCard] = []
-    relevance_notes: list[RelevanceNote] | list[dict[str, Any]] = []
+    relevance_notes: list[RelevanceNote] = []
     term_cards: list[TermCard] = []
     timeline_events: list[TimelineEvent] = []
-    review_report: ReviewReport | dict[str, Any] | None = None
     brief_model: PublicBrief | None = None
-    md_path: str | None = None
+    brief_md_path: str | None = None
 
-    if not plan_spec.enable_history:
-        bb.put(_TIMELINE_KEY, [])
-        bb.trace("pipeline: history disabled")
-
-    # ----------------------------------------------------------------------
-    # Execute DAG
-    # ----------------------------------------------------------------------
     for step in dag.topological_order():
-        # ---------------------- parse ----------------------
         if step == "parse":
-            parsed_chunks = parser_agent(
-                input_text,
-                bb,
-                key=_PARSED_CHUNKS_KEY,
-                min_chars=1,
-                make_trace=True,
-            )
-            bb.trace("planner: executed step parse")
-            continue
+            # Fixed (Mypy): parser_agent returns list[dict], not models.
+            parsed_chunks_raw = parser_agent(input_text, bb)
+            bb.put(_PARSED_CHUNKS_KEY, parsed_chunks_raw)
 
-        # -------------------- translate --------------------
-        if step == "translate":
-            explainer_res = run_explainer(bb)
-            explanation_cards = cast(
-                list[ExplanationCard],
-                _unwrap_or_fail("explainer", explainer_res),
+        elif step == "translate":
+            # Explainer + citizen + jargon together form the "public
+            # translation" layer, but they remain distinct agents so that
+            # we can rewire them in future milestones.
+            # Fixed (Logic/Mypy): Agents read directly from blackboard.
+            explainer_result: Result[list[ExplanationCard], str] = run_explainer(bb)
+            explanation_cards = _unwrap_or_fail("explainer_agent", explainer_result)
+            bb.put(
+                _EXPLANATIONS_KEY,
+                [_artifact_to_dict(card) for card in explanation_cards],
             )
 
-            jargon_res = run_jargon(bb)
-            term_cards = cast(
-                list[TermCard],
-                _unwrap_or_fail("jargon", jargon_res),
+        elif step == "narrate":
+            # Citizen: relevance framing and audience-facing language.
+            citizen_result: Result[list[RelevanceNote], str] = run_citizen(bb)
+            relevance_notes = _unwrap_or_fail("citizen_agent", citizen_result)
+            bb.put(
+                _RELEVANCE_NOTES_KEY,
+                [_artifact_to_dict(note) for note in relevance_notes],
             )
 
-            bb.trace("planner: executed step translate")
-            continue
-
-        # -------------------- timeline ---------------------
-        if step == "timeline":
-            hist_res = run_history(bb)
-            timeline_events = cast(
-                list[TimelineEvent],
-                _unwrap_or_fail("history", hist_res),
+            # Jargon: terms and definitions.
+            jargon_result: Result[list[TermCard], str] = run_jargon(bb)
+            term_cards = _unwrap_or_fail("jargon_agent", jargon_result)
+            bb.put(
+                _TERMS_KEY,
+                [_artifact_to_dict(term) for term in term_cards],
             )
-            bb.trace("planner: executed step timeline")
-            continue
 
-        # -------------------- narrate ----------------------
-        if step == "narrate":
-            citizen_res = run_citizen(bb)
-            relevance_notes = cast(
-                list[RelevanceNote],
-                _unwrap_or_fail("citizen", citizen_res),
+        elif step == "timeline":
+            # History: optional temporal lens and evolution narrative.
+            history_result: Result[list[TimelineEvent], str] = run_history(bb)
+            timeline_events = _unwrap_or_fail("history_agent", history_result)
+            bb.put(
+                _TIMELINE_KEY,
+                [_artifact_to_dict(ev) for ev in timeline_events],
             )
-            bb.trace("planner: executed step narrate")
-            continue
 
-        # -------------------- review -----------------------
-        if step == "review":
-            editor_res = run_editor(bb)
-            review_report = cast(
-                ReviewReport,
-                _unwrap_or_fail("editor", editor_res),
-            )
-            bb.trace("planner: executed step review")
-            continue
+        elif step == "review":
+            # Editor: factuality, bias, clarity checks. The editor sees the
+            # whole artifact graph (explanations, terms, relevance, timeline).
+            # Fixed (F841): Assign unused result to `_`.
+            _review_result = run_editor(bb)
+            _ = _unwrap_or_fail("editor_agent", _review_result)
+            # We currently do not store the whole review on the blackboard;
+            # this can be added once the report schema stabilizes.
 
-        # --------------------- brief -----------------------
-        if step == "brief":
-            brief_model = _build_public_brief_from_explanations(explanation_cards)
-            bb.put(_PUBLIC_BRIEF_KEY, brief_model)
+        elif step == "brief":
+            # Brief builder: final assembly into a public-facing Markdown brief.
+            # Fixed (Mypy): Result type is Result[Path, str].
+            brief_result: Result[Path, str] = run_brief_builder(bb)
+            path_obj = _unwrap_or_fail("brief_builder_agent", brief_result)
+            brief_md_path = str(path_obj)
 
-            try:
-                md_res = run_brief_builder(bb, run_id="public-translation")
-                path = _unwrap_or_fail("brief_builder", md_res)
-                md_path = str(path)
-                bb.put(_PUBLIC_BRIEF_MD_KEY, md_path)
-            except Exception:
-                md_path = None
+        # Unknown steps are ignored; this makes it easier to experiment with
+        # planner outputs without breaking older pipeline versions.
 
-            bb.trace("planner: executed step brief")
-            continue
+    # Fallback / Synthesis:
+    # If brief_builder ran, it produced a file, but we still need the
+    # structured PublicBrief object for the return payload. We synthesize it
+    # here using the deterministic helper.
+    brief_model = _build_public_brief_from_explanations(explanation_cards)
+    bb.put(_PUBLIC_BRIEF_KEY, _artifact_to_dict(brief_model))
 
-        # ------------------- Unknown -----------------------
-        raise RuntimeError(f"Unknown planner step {step!r}")
-
+    # Record a final snapshot to help with debugging and tests.
     bb.trace("pipeline: public_translation complete")
 
-    # ----------------------------------------------------------------------
-    # Safe review_report conversion
-    # ----------------------------------------------------------------------
-    if review_report is None:
-        review_dict = None
-    elif isinstance(review_report, Mapping):
-        review_dict = dict(review_report)
-    elif hasattr(review_report, "model_dump"):
-        review_dict = review_report.model_dump()
-    else:
-        review_dict = None
-
-    # ----------------------------------------------------------------------
-    # Safe brief payload conversion
-    # ----------------------------------------------------------------------
-    if brief_model is None:
-        brief_payload: PublicBriefPayload = {
-            "title": "",
-            "summary": "",
-            "sections": [],
-        }
-    else:
-        brief_payload = cast(PublicBriefPayload, brief_model.model_dump())
-
-    # ----------------------------------------------------------------------
-    # Final JSON-safe result
-    # ----------------------------------------------------------------------
-    result: PipelineResult = {
-        "blackboard": bb,
-        "parsed_chunks": parsed_chunks,
-        "explanations": [_artifact_to_dict(c) for c in explanation_cards],
-        "relevance_notes": [_artifact_to_dict(r) for r in _as_list(relevance_notes)],
-        "terms": [_artifact_to_dict(t) for t in term_cards],
-        "timeline_events": [_artifact_to_dict(t) for t in timeline_events],
-        "review_report": review_dict,
-        "public_brief": brief_payload,
-        "public_brief_md_path": md_path,
+    # ------------- Assemble JSON-safe result -------------
+    brief_dict = _artifact_to_dict(brief_model)
+    brief_payload: PublicBriefPayload = {
+        "title": cast(str, brief_dict.get("title", PIPELINE_BRIEF_TITLE)),
+        "summary": cast(str, brief_dict.get("summary", "")),
+        "sections": cast(
+            list[Mapping[str, object]],
+            brief_dict.get("sections", []),
+        ),
     }
-    return result
+
+    return {
+        "blackboard": bb,
+        "parsed_chunks": cast(
+            list[Mapping[str, object]],
+            bb.get(_PARSED_CHUNKS_KEY) or [],
+        ),
+        "explanations": cast(
+            list[Mapping[str, object]],
+            bb.get(_EXPLANATIONS_KEY) or [],
+        ),
+        "relevance_notes": cast(
+            list[Mapping[str, object]],
+            bb.get(_RELEVANCE_NOTES_KEY) or [],
+        ),
+        "terms": cast(
+            list[Mapping[str, object]],
+            bb.get(_TERMS_KEY) or [],
+        ),
+        "timeline_events": cast(
+            list[Mapping[str, object]],
+            bb.get(_TIMELINE_KEY) or [],
+        ),
+        "public_brief": brief_payload,
+        "public_brief_md_path": brief_md_path,
+    }
 
 
-__all__ = [
-    "run_pipeline",
-    "PipelineResult",
-    "PublicBriefPayload",
-    "PIPELINE_BRIEF_TITLE",
-]
+__all__ = ["run_pipeline", "PipelineResult", "PublicBriefPayload"]

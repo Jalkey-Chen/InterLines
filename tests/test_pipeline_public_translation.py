@@ -11,10 +11,12 @@ These tests exercise the wiring in ``interlines.pipelines.public_translation``:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import interlines.pipelines.public_translation as pipeline_mod
 from interlines.core.blackboard.memory import Blackboard
+from interlines.core.contracts.planner import PlannerPlanSpec  # <--- 新增这一行
 from interlines.core.planner.strategy import expected_path
 from interlines.core.result import ok
 from interlines.pipelines.public_translation import (
@@ -24,7 +26,7 @@ from interlines.pipelines.public_translation import (
 )
 
 
-def _run_pipeline_with_stubbed_agents(
+def _run_pipeline_with_stubbed_agents(  # noqa: C901
     input_text: str,
     *,
     enable_history: bool,
@@ -46,6 +48,9 @@ def _run_pipeline_with_stubbed_agents(
     orig_run_history = mod_any.run_history
     orig_run_editor = mod_any.run_editor
     orig_run_brief_builder = mod_any.run_brief_builder
+    orig_planner_cls = mod_any.PlannerAgent
+
+    # --- 1. Define Fake Functions ---
 
     def fake_run_explainer(bb: Blackboard) -> Any:
         """Return a single minimal explanation card as a plain mapping."""
@@ -125,13 +130,34 @@ def _run_pipeline_with_stubbed_agents(
     def fake_run_brief_builder(
         bb: Blackboard,
         *,
-        run_id: str,
+        run_id: str = "run",
         reports_dir: str | None = None,
     ) -> Any:
         """Pretend to write a markdown file and return a fake path."""
-        # We do not touch the filesystem in tests; the pipeline only needs a
-        # string path that can be echoed back to callers.
-        return ok(f"artifacts/reports/{run_id}-stub.md")
+        # Fixed: Ensure filename format matches test expectation ("-stub.md")
+        return ok(Path(f"artifacts/reports/{run_id}-stub.md"))
+
+    # --- 2. Define Fake Planner Class ---
+
+    class FakePlannerAgent:
+        """A stub planner that returns a deterministic plan without LLMs."""
+
+        def __init__(self, llm: Any = None, model_alias: str = "") -> None:
+            pass
+
+        def plan(self, bb: Blackboard, ctx: Any) -> PlannerPlanSpec:
+            # Deterministically return steps based on the request flag
+            if ctx.enable_history_requested:
+                steps = ["parse", "translate", "timeline", "narrate", "review", "brief"]
+            else:
+                steps = ["parse", "translate", "narrate", "review", "brief"]
+
+            return PlannerPlanSpec(
+                strategy="stub_strategy",
+                steps=steps,
+                enable_history=ctx.enable_history_requested,
+                notes="Stubbed plan for testing.",
+            )
 
     try:
         # Install stubs on the module.
@@ -141,6 +167,7 @@ def _run_pipeline_with_stubbed_agents(
         mod_any.run_history = fake_run_history
         mod_any.run_editor = fake_run_editor
         mod_any.run_brief_builder = fake_run_brief_builder
+        mod_any.PlannerAgent = FakePlannerAgent
 
         # Run the real pipeline implementation with our fake agents.
         return run_pipeline(input_text, enable_history=enable_history)
@@ -152,6 +179,7 @@ def _run_pipeline_with_stubbed_agents(
         mod_any.run_history = orig_run_history
         mod_any.run_editor = orig_run_editor
         mod_any.run_brief_builder = orig_run_brief_builder
+        mod_any.PlannerAgent = orig_planner_cls
 
 
 def test_run_pipeline_with_history_produces_artifacts() -> None:
@@ -237,7 +265,7 @@ def test_pipeline_records_planner_dag_and_trace() -> None:
     # The planner DAG should be stored under a dedicated key.
     dag_payload = bb.get("planner_dag")
     assert isinstance(dag_payload, dict)
-    assert dag_payload["strategy"] == "with_history"
+    assert dag_payload["strategy"] == "stub_strategy"
     assert tuple(dag_payload["topo"]) == expected_path(enable_history=True)
 
     # A trace snapshot should contain the planner note.
