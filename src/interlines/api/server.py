@@ -1,120 +1,76 @@
-"""Uvicorn runner for the InterLines FastAPI application.
+"""
+ASGI Entry Point for InterLines API.
 
-This module provides a small, typed `run()` function used by the console script
-`interlines-api` (declared in pyproject.toml). It bootstraps the ASGI app from
-:mod:`interlines.api.app`, selects sensible defaults for host/port, and configures
-logging based on the typed settings defined in :mod:`interlines.core.settings`.
+This module exposes the `app` object required by ASGI servers (Uvicorn/Gunicorn).
+It proactively loads environment variables from `.env` to ensure that configuration
+is available before the application factory or any module-level logic runs.
 
-Design goals
-------------
-1) **No side effects on import** — the server starts only when `run()` is called.
-2) **12-factor friendly** — host/port can be configured via environment variables:
-   - `API_HOST` (default: `"127.0.0.1"`)
-   - `API_PORT` (default: `8000`)
-   - `API_RELOAD` (default: `True` in dev, `False` otherwise)
-3) **Consistent logging** — uvicorn log level follows our `LOG_LEVEL` setting.
+Usage
+-----
+Run via the module entry point:
+    $ uv run python -m interlines.api.server
 
-Examples
---------
-Run with defaults:
-    $ uv run interlines-api
-
-Change port (Windows/Unix):
-    $ API_PORT=8080 uv run interlines-api
-
-Enable auto-reload explicitly:
-    $ API_RELOAD=true uv run interlines-api
+Or via uvicorn directly:
+    $ uv run uvicorn interlines.api.server:app --reload
 """
 
-from __future__ import annotations
-
 import os
+from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 
-from interlines.core.settings import get_logger, load_settings
+from interlines.api.app import create_app
 
-from .app import get_app
+# --------------------------------------------------------------------------- #
+# Environment Setup
+# --------------------------------------------------------------------------- #
 
+# Load environment variables from .env BEFORE importing the application factory.
+# This ensures that global singletons (like JobStore) or settings modules
+# that read os.environ at import time can initialize correctly.
+env_path = Path(".env")
+load_dotenv(dotenv_path=env_path)
 
-def _bool_from_env(name: str, default: bool) -> bool:
-    """Parse a boolean-like environment variable with sensible defaults."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    val = raw.strip().lower()
-    if val in {"1", "true", "yes", "on"}:
-        return True
-    if val in {"0", "false", "no", "off"}:
-        return False
-    return default
+# Factory invocation
+app = create_app()
 
 
-def run(
-    host: str | None = None,
-    port: int | None = None,
-    reload: bool | None = None,
-) -> None:
-    """Start the InterLines API server using uvicorn.
+def main() -> None:
+    """Run the API server locally for development."""
+    # Debug: Verify that all critical API keys are loaded.
+    # This helps confirm that python-dotenv successfully found the file and
+    # that the developer has populated the necessary secrets.
+    print("[Server] Loading environment variables from .env...")
 
-    Parameters
-    ----------
-    host : Optional[str], default None
-        Bind address. If None, falls back to `API_HOST` or `"127.0.0.1"`.
-    port : Optional[int], default None
-        Bind port. If None, falls back to `API_PORT` or `8000`.
-    reload : Optional[bool], default None
-        Auto-reload. If None, uses `API_RELOAD` env var or `settings.is_dev`.
-    """
-    settings = load_settings()
-    log = get_logger("interlines.api.server")
+    expected_keys = [
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "MOONSHOT_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ZHIPU_API_KEY",
+        "XAI_API_KEY",
+    ]
 
-    # --- Resolve host (concrete str for typing) --------------------------------
-    env_host = os.environ.get("API_HOST")
-    bind_host: str = host if host is not None else (env_host or "127.0.0.1")
+    print(f"{'[ Key Check ]':=^60}")
+    for var_name in expected_keys:
+        value = os.getenv(var_name, "")
+        if value:
+            # Mask the key for security, showing only the first 8 chars
+            masked = f"{value[:8]}..."
+            print(f"{var_name:<20} : ✅ Loaded ({masked})")
+        else:
+            print(f"{var_name:<20} : ❌ Missing")
+    print(f"{'='*60}\n")
 
-    # --- Resolve port (concrete int for typing) --------------------------------
-    if port is not None:
-        bind_port: int = port
-    else:
-        env_port = os.environ.get("API_PORT")
-        bind_port = int(env_port) if (env_port is not None and env_port.isdigit()) else 8000
-
-    # --- Resolve reload (concrete bool for typing) -----------------------------
-    if reload is not None:
-        use_reload: bool = reload
-    else:
-        use_reload = _bool_from_env("API_RELOAD", default=settings.is_dev)
-
-    log.info(
-        "Starting InterLines API (host=%s, port=%s, reload=%s, level=%s)",
-        bind_host,
-        bind_port,
-        use_reload,
-        settings.log_level,
+    uvicorn.run(
+        "interlines.api.server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
     )
-
-    if use_reload:
-        # IMPORTANT: pass import string + factory=True for uvicorn auto-reload
-        uvicorn.run(
-            "interlines.api.app:get_app",
-            factory=True,
-            host=bind_host,
-            port=bind_port,
-            reload=True,
-            log_level=settings.log_level.lower(),
-        )
-    else:
-        # No reload: pass the concrete ASGI app instance
-        uvicorn.run(
-            app=get_app(),
-            host=bind_host,
-            port=bind_port,
-            reload=False,
-            log_level=settings.log_level.lower(),
-        )
 
 
 if __name__ == "__main__":
-    # Allow `python -m interlines.api.server` during local dev.
-    run()
+    main()
