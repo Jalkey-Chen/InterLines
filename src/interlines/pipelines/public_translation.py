@@ -50,6 +50,7 @@ from interlines.core.contracts.relevance import RelevanceNote
 from interlines.core.contracts.review import ReviewReport
 from interlines.core.contracts.term import TermCard
 from interlines.core.contracts.timeline import TimelineEvent
+from interlines.core.planner.strategy import build_plan
 from interlines.core.result import Result
 
 # Blackboard keys (kept consistent with individual agents).
@@ -269,11 +270,18 @@ def run_pipeline(input_text: str, enable_history: bool = False) -> PipelineResul
         :class:`Blackboard` produced during the run.
     """
     bb = Blackboard()
-    bb.trace("pipeline: public_translation start")
+
+    # ------------------------------------------------------------------
+    # Planner: build and record the execution strategy DAG.
+    # ------------------------------------------------------------------
+    plan = build_plan(enable_history=enable_history)
+    bb.put("planner_dag", plan.to_payload())
+    bb.trace("planner: public_translation plan")
 
     # ------------------------------------------------------------------
     # 1. Parse raw text into paragraphs.
     # ------------------------------------------------------------------
+    bb.trace("pipeline: public_translation start")
     parsed_chunks = parser_agent(
         input_text,
         bb,
