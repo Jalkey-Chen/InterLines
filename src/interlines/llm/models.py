@@ -105,7 +105,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     # Planner — global brain that builds DAGs and chooses strategies.
     # Uses xAI Grok 4.1 Fast Reasoning for strong multi-step reasoning.
     "planner": ModelConfig(
-        name="grok-4.1-fast-reasoning",
+        name="grok-4-1-fast-reasoning",
         provider="xai",
         base_url="https://api.x.ai/v1",
         max_tokens=4096,
@@ -132,7 +132,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     # Jargon — term definition and cross-lingual clarification.
     # Uses Moonshot Kimi K2 with strong CN/EN semantics.
     "jargon": ModelConfig(
-        name="kimi-k2",
+        name="kimi-k2-0905-preview",
         provider="moonshot",
         base_url="https://api.moonshot.cn/v1",
         max_tokens=4096,
