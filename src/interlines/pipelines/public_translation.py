@@ -387,7 +387,7 @@ def run_pipeline(
     dag = DAG.from_plan_spec(plan_spec)
     bb.put(_PLANNER_PLAN_KEY, plan_spec.model_dump())
     bb.put(_PLANNER_DAG_KEY, dag.to_payload())
-    bb.trace("phase 1: plan ready")
+    bb.trace("planner: phase 1 plan")
 
     # 3. Execute (Phase 1)
     _execute_dag(dag, input_data, bb, worker_llm)
