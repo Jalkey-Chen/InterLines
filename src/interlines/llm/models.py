@@ -108,7 +108,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="grok-4-1-fast-reasoning",
         provider="xai",
         base_url="https://api.x.ai/v1",
-        max_tokens=4096,
+        max_tokens=64000,
         temperature=0.3,
     ),
     # Parser — structure + segmentation (JSON output, schema fidelity).
@@ -117,7 +117,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="glm-4.6",
         provider="zhipu",
         base_url="https://api.glm.ai/v1",
-        max_tokens=1024,
+        max_tokens=65536,
         temperature=0.2,
     ),
     # Explainer — heavy-weight multi-evidence synthesis and deep explanation.
@@ -126,7 +126,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="gpt-5.1",
         provider="openai",
         base_url="https://api.openai.com/v1",
-        max_tokens=8192,
+        max_tokens=64000,
         temperature=0.4,
     ),
     # Jargon — term definition and cross-lingual clarification.
@@ -135,7 +135,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="kimi-k2-0905-preview",
         provider="moonshot",
         base_url="https://api.moonshot.cn/v1",
-        max_tokens=4096,
+        max_tokens=64000,
         temperature=0.4,
     ),
     # Citizen — public-facing voice, style & persona control.
@@ -144,7 +144,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="deepseek-v3.2",
         provider="deepseek",
         base_url="https://api.deepseek.com/v1",
-        max_tokens=4096,
+        max_tokens=64000,
         temperature=0.6,
     ),
     # History — temporal reasoning, timelines, and concept evolution.
@@ -153,7 +153,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="gemini-2.5-pro",
         provider="google",
         base_url="https://generativelanguage.googleapis.com/v1beta",
-        max_tokens=8192,
+        max_tokens=64000,
         temperature=0.3,
     ),
     # Editor — factuality, hallucination checks, and consistency validation.
@@ -162,7 +162,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="gemini-2.0-flash",
         provider="google",
         base_url="https://generativelanguage.googleapis.com/v1beta",
-        max_tokens=4096,
+        max_tokens=64000,
         temperature=0.2,
     ),
     # Visual — diagram / Mermaid / SVG / spec-style code generation.
@@ -180,7 +180,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         name="gpt-4o-mini",
         provider="openai",
         base_url="https://api.openai.com/v1",
-        max_tokens=4096,
+        max_tokens=16384,
         temperature=0.4,
     ),
 }
