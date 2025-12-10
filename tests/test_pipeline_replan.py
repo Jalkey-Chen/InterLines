@@ -1,3 +1,4 @@
+# tests/test_pipeline_replan.py
 """
 Integration tests for the Single-Round Replan logic (Step 5.3).
 
@@ -31,7 +32,7 @@ def test_replan_triggered_on_low_readability() -> None:
     - Total calls: Explainer=2, Citizen=2, Editor=2.
     - Blackboard contains the 'planner_plan_spec.replan' artifact.
     """
-    input_text = "Complex text needing refinement."
+    input_data = "Complex text needing refinement."  # Renamed variable
 
     # -----------------------------------------------------------------------
     # 1. Define Contracts (Plans & Reports)
@@ -138,7 +139,8 @@ def test_replan_triggered_on_low_readability() -> None:
         planner_instance.replan.return_value = replan_spec  # Phase 2
 
         # Run Pipeline
-        result = run_pipeline(input_text, use_llm_planner=True)
+        # Fixed: Use input_data arg
+        result = run_pipeline(input_data=input_data, use_llm_planner=True)
         bb = result["blackboard"]
 
     # -----------------------------------------------------------------------
