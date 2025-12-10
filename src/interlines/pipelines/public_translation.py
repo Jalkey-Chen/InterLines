@@ -274,7 +274,7 @@ def _execute_step(
         parsed_chunks_raw = parser_agent(input_data, bb, llm=worker_llm)
         bb.put(_PARSED_CHUNKS_KEY, parsed_chunks_raw)
 
-    elif step in ("translate", "explainer_refine"):
+    elif step in ("translate", "explainer", "explainer_refine"):
         # "translate" = Initial Pass; "explainer_refine" = Replan Pass
         # Both use the same agent, which reads/writes "explanations"
         explainer_res = run_explainer(bb)
@@ -282,22 +282,33 @@ def _execute_step(
         bb.put(_EXPLANATIONS_KEY, [_artifact_to_dict(c) for c in cards])
         bb.trace(f"step '{step}' finished")
 
-    elif step in ("narrate", "citizen_refine"):
+    # --- FIX: Added 'citizen' step and Safety Guard ---
+    elif step in ("narrate", "citizen", "citizen_refine"):
         # "narrate" = Initial Pass; "citizen_refine" = Replan Pass
+
+        # GUARD: If the Planner skipped 'translate', we might not have explanations.
+        # Running citizen without explanations will crash.
+        if not bb.get(_EXPLANATIONS_KEY):
+            print(f"   [WARN] Skipping '{step}' because no explanations found on blackboard.")
+            return
+
         citizen_res = run_citizen(bb)
         notes = _unwrap_or_fail("citizen_agent", citizen_res)
         bb.put(_RELEVANCE_NOTES_KEY, [_artifact_to_dict(n) for n in notes])
         bb.trace(f"step '{step}' finished")
 
+    # --- FIX: Added 'jargon' step ---
     elif step in ("jargon", "jargon_refine"):
         jargon_res = run_jargon(bb)
         terms = _unwrap_or_fail("jargon_agent", jargon_res)
         bb.put(_TERMS_KEY, [_artifact_to_dict(t) for t in terms])
+        bb.trace(f"step '{step}' finished")
 
-    elif step in ("timeline", "history_refine"):
+    elif step in ("timeline", "history", "history_refine"):
         history_res = run_history(bb)
         events = _unwrap_or_fail("history_agent", history_res)
         bb.put(_TIMELINE_KEY, [_artifact_to_dict(e) for e in events])
+        bb.trace(f"step '{step}' finished")
 
     elif step in ("review", "editor"):
         # "review" = Initial Pass; "editor" = Re-verification Pass
@@ -517,7 +528,7 @@ def run_pipeline(
         notes=plan_spec.notes,
     )
     bb.put(_PLANNER_REPORT_KEY, plan_report.model_dump())
-    # --- FIX: Add the trace that tests were failing on ---
+    # Trace event for observability (and tests)
     bb.trace("planner: report written")
 
     # Build final API payload
