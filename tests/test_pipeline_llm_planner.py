@@ -1,3 +1,4 @@
+# tests/test_pipeline_llm_planner.py
 """
 Integration tests for DAG-driven pipeline execution with LLM planner stubs.
 
@@ -6,6 +7,11 @@ These tests verify that `run_pipeline(use_llm_planner=True)` correctly:
 2. Converts that plan into a DAG.
 3. Executes agents in the EXACT order dictated by the plan (even if weird).
 4. Persists the plan spec to the blackboard.
+
+Updates
+-------
+- Updated `mock_parse` signature to accept `llm` argument (Semantic Parsing support).
+- Renamed `input_text` to `input_data` for consistency.
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ def test_pipeline_follows_custom_llm_plan() -> None:
       valid for testing DAG adherence).
     - Custom Order: parse -> timeline -> translate -> brief
     """
-    input_text = "Test input for custom planning."
+    input_data = "Test input for custom planning."  # Renamed variable
 
     # 1. Define the custom plan (The "Contract")
     custom_steps = ["parse", "timeline", "translate", "brief"]
@@ -55,7 +61,9 @@ def test_pipeline_follows_custom_llm_plan() -> None:
     #    These agents don't need to do real work, just log their presence
     #    and return valid empty artifacts to keep the pipeline from crashing.
 
-    def mock_parse(text: str, bb: Blackboard) -> Any:
+    # Fixed: Updated signature to accept `llm` kwarg passed by the pipeline
+    # Also renamed first arg to `input_data` to match new signature types
+    def mock_parse(input_data: Any, bb: Blackboard, **kwargs: Any) -> Any:
         execution_log.append("parse")
         return [{"id": "p1", "text": "stub"}]
 
@@ -74,7 +82,6 @@ def test_pipeline_follows_custom_llm_plan() -> None:
 
     # 4. Patch everything using a context manager
     #    We patch where the objects are USED (in the pipeline module).
-    #    Fixed (E501): Use parentheses (`with (...)`) to allow multi-line formatting.
     with (
         patch("interlines.pipelines.public_translation.PlannerAgent") as MockPlannerCls,
         patch(
@@ -101,7 +108,7 @@ def test_pipeline_follows_custom_llm_plan() -> None:
 
         # 5. Run the pipeline
         result = run_pipeline(
-            input_text,
+            input_data,
             enable_history=True,  # This is a hint, but our stub planner forces True
             use_llm_planner=True,  # CRITICAL: This enables the logic we are testing
         )
