@@ -1,259 +1,128 @@
 """
-Markdown brief builder agent.
+AI-powered Brief Builder Agent (The "Chief Editor").
 
-This agent reads higher-level artifacts from the blackboard
-(explanations, terms, timeline events) and compiles them into a
-single human-facing Markdown file.
+This agent acts as the final synthesizer. Instead of using a rigid template,
+it reads all high-level artifacts from the blackboard (Explanations, History,
+Glossary, Relevance Notes, QA Report) and uses an LLM to compose a cohesive,
+well-structured Markdown public brief.
 
 Responsibilities
 ----------------
-- Collect:
-  - ExplanationCard instances under "explanations"
-  - TermCard instances under "terms"
-  - TimelineEvent instances under "timeline_events"
-- Render a Markdown document with three main sections:
-  1. Overview (based on explanations)
-  2. Key terms (glossary-style)
-  3. Timeline (historical evolution)
-- Write the Markdown file under ``artifacts/reports/<run_id>.md``
-  and store the resulting path on the blackboard under
-  ``"public_brief_md_path"``.
+- Context Assembly: Serialize all artifacts into a structured context for the LLM.
+- AI Composition: Ask the LLM (Role: Science Communicator/Editor) to write
+  the brief, dynamically deciding the best flow and layout based on the content.
+- Persistence: Save the generated Markdown to `artifacts/reports/<run_id>.md`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+import json
 from pathlib import Path
 from typing import Any
 
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.result import Result, err, ok
+from interlines.llm.client import LLMClient
 
-# Blackboard keys (kept consistent with other agents).
-_PARSED_CHUNKS_KEY = "parsed_chunks"
+# Blackboard keys
 _EXPLANATIONS_KEY = "explanations"
 _TERMS_KEY = "terms"
 _TIMELINE_KEY = "timeline_events"
+_RELEVANCE_NOTES_KEY = "relevance_notes"
+_REVIEW_REPORT_KEY = "review_report"
 
-# Where we store the generated Markdown path on the blackboard.
+# Output key
 _PUBLIC_BRIEF_MD_KEY = "public_brief_md_path"
 
-# Default relative directory for Markdown briefs.
+# Model configuration
+# Aligned with models.py definition for "brief_builder"
+_BUILDER_MODEL_ALIAS = "brief_builder"
 _DEFAULT_REPORTS_DIR = Path("artifacts") / "reports"
 
 
-def _as_list(value: Any) -> list[Any]:
-    """Normalize an arbitrary value into a list for iteration.
+def _get_llm_client() -> LLMClient:
+    """Return the shared LLM client."""
+    return LLMClient.from_env()
 
-    - None           -> []
-    - list           -> itself
-    - other Sequence -> list(value)
-    - everything else -> [value]
+
+def _serialize_artifacts(bb: Blackboard) -> str:
     """
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-        return list(value)
-    return [value]
+    Serialize all relevant blackboard artifacts into a JSON string context.
 
-
-def _get_field(obj: Any, key: str) -> Any:
-    """Retrieve a field from a Mapping or an object via attribute access."""
-    if isinstance(obj, Mapping):
-        return obj.get(key)
-    return getattr(obj, key, None)
-
-
-def _get_str_field(obj: Any, key: str) -> str:
-    """Return a stripped string representation of obj[key] (or empty string)."""
-    value = _get_field(obj, key)
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _normalise_date(value: Any) -> str:
-    """Convert a TimelineEvent.when-like value into a readable string."""
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _ensure_reports_dir(base: Path | str | None = None) -> Path:
-    """Ensure the reports directory exists and return it."""
-    if base is None:
-        base_path = _DEFAULT_REPORTS_DIR
-    else:
-        base_path = Path(base)
-    base_path.mkdir(parents=True, exist_ok=True)
-    return base_path
-
-
-def _build_overview_section(explanations: Sequence[Any]) -> tuple[str, str]:
-    """Build the document title and the Overview section.
-
-    Returns
-    -------
-    title: str
-        Top-level document title.
-    section_md: str
-        Markdown for the overview section (without the leading '# ' title).
+    This provides the raw material for the AI Editor to work with.
     """
-    lines: list[str] = []
 
-    primary_claim = ""
-    if explanations:
-        primary_claim = _get_str_field(explanations[0], "claim")
+    # We use explicit Pydantic dumping if available, or simple dict access
+    def _dump(val: Any) -> Any:
+        if hasattr(val, "model_dump"):
+            return val.model_dump()
+        if isinstance(val, list):
+            return [_dump(v) for v in val]
+        return val
 
-    if primary_claim:
-        title = primary_claim
-    else:
-        title = "InterLines Public Brief"
+    context = {
+        "explanations": _dump(bb.get(_EXPLANATIONS_KEY)),
+        "timeline": _dump(bb.get(_TIMELINE_KEY)),
+        "glossary": _dump(bb.get(_TERMS_KEY)),
+        "relevance_notes": _dump(bb.get(_RELEVANCE_NOTES_KEY)),
+        "quality_report": _dump(bb.get(_REVIEW_REPORT_KEY)),
+    }
 
-    lines.append("## Overview")
-    lines.append("")
+    # Prune empty keys to save tokens and reduce noise
+    clean_context = {k: v for k, v in context.items() if v}
 
-    if explanations:
-        for idx, card in enumerate(explanations, start=1):
-            claim = _get_str_field(card, "claim")
-            rationale = _get_str_field(card, "rationale")
-            if not claim and not rationale:
-                continue
-
-            if claim:
-                lines.append(f"### Explanation {idx}")
-                lines.append("")
-                lines.append(f"**Claim:** {claim}")
-            else:
-                lines.append(f"### Explanation {idx}")
-
-            if rationale:
-                lines.append("")
-                lines.append(rationale)
-            lines.append("")
-    else:
-        lines.append("_No explanations were available on the blackboard._")
-        lines.append("")
-
-    overview_md = "\n".join(lines).rstrip() + "\n"
-    return title, overview_md
+    return json.dumps(clean_context, indent=2, ensure_ascii=False)
 
 
-def _build_terms_section(terms: Sequence[Any]) -> str:
-    """Build the 'Key terms' Markdown section."""
-    if not terms:
-        return ""
+def _build_editor_prompt(context_json: str) -> list[dict[str, str]]:
+    """Construct the prompt for the AI Chief Editor."""
+    # Use implicit string concatenation to satisfy line-length limits (ruff E501)
+    # while preserving the exact formatting of the prompt.
+    system_content = (
+        "You are the Chief Editor of 'InterLines', a publication that translates "
+        "complex topics for the general public.\n\n"
+        "Your task is to synthesize a set of raw research notes into a beautiful, "
+        "cohesive, and readable Markdown report.\n\n"
+        "**Input Data:**\n"
+        "You will be provided with a JSON object containing:\n"
+        "1. `explanations`: The core logic and claims (Expert layer).\n"
+        "2. `relevance_notes`: Why this matters to specific people (Citizen layer).\n"
+        "3. `timeline`: Historical events (History layer).\n"
+        "4. `glossary`: Technical term definitions.\n"
+        "5. `quality_report`: An internal quality score.\n\n"
+        "**Composition Guidelines:**\n"
+        "- **Structure**: Do NOT just list the inputs. Organize them into a narrative flow.\n"
+        "    - Start with a catchy Title and a strong Introduction "
+        "(mix the Summary with Relevance Notes).\n"
+        "    - Use the `explanations` to build the main body. Use clear headings.\n"
+        "    - Weave the `glossary` definitions naturally into the text OR create a "
+        '"Key Concepts" sidebar section if there are many terms.\n'
+        "    - If a `timeline` exists, present it where it adds the most context "
+        "(usually after the intro or at the end).\n"
+        "    - **Formatting**: Use Markdown heavily. Use bolding for emphasis, "
+        "bullet points for readability, and blockquotes for key takeaways.\n"
+        "    - **Tone**: Engaging, clear, objective, but accessible "
+        "(New York Times Science section style).\n\n"
+        "**Critical Rules:**\n"
+        "- **Truthfulness**: Do NOT invent new facts. Use only the information "
+        "provided in the JSON.\n"
+        "- **Completeness**: You MUST include the content from the `explanations` "
+        "and `relevance_notes`.\n"
+        "- **Transparency**: At the very bottom of the report, add a small "
+        '"About this Brief" footer. Include the "Overall Score" from the '
+        "`quality_report` if available, to show the reader we verify our work.\n\n"
+        "Output ONLY the raw Markdown content. Do not output markdown fences (```markdown)."
+    )
 
-    lines: list[str] = []
-    lines.append("## Key terms")
-    lines.append("")
+    user_content = (
+        f"Here are the raw artifacts for this run:\n\n{context_json}\n\n"
+        "Please compose the final Public Brief in Markdown."
+    )
 
-    for term_obj in terms:
-        name = _get_str_field(term_obj, "term")
-        if not name:
-            continue
-
-        definition = _get_str_field(term_obj, "definition")
-        aliases_raw = _get_field(term_obj, "aliases")
-        examples_raw = _get_field(term_obj, "examples")
-
-        aliases: list[str] = []
-        if isinstance(aliases_raw, Sequence) and not isinstance(
-            aliases_raw,
-            str | bytes,
-        ):
-            aliases = [str(a).strip() for a in aliases_raw if str(a).strip()]
-
-        examples: list[str] = []
-        if isinstance(examples_raw, Sequence) and not isinstance(
-            examples_raw,
-            str | bytes,
-        ):
-            examples = [str(e).strip() for e in examples_raw if str(e).strip()]
-
-        lines.append(f"### {name}")
-        lines.append("")
-        if definition:
-            lines.append(f"**Definition.** {definition}")
-        if aliases:
-            lines.append(f"**Also called.** {', '.join(aliases)}")
-        if examples:
-            lines.append("")
-            lines.append("**Examples**")
-            for ex in examples:
-                lines.append(f"- {ex}")
-        lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _build_timeline_section(events: Sequence[Any]) -> str:
-    """Build the 'Timeline' Markdown section."""
-    if not events:
-        return ""
-
-    # Normalise and sort by date if possible.
-    records: list[tuple[str, str, str]] = []
-    for ev in events:
-        when_raw = _get_field(ev, "when")
-        title = _get_str_field(ev, "title")
-        description = _get_str_field(ev, "description")
-        when_str = _normalise_date(when_raw)
-        records.append((when_str, title, description))
-
-    records.sort(key=lambda t: t[0] or "")
-
-    lines: list[str] = []
-    lines.append("## Timeline")
-    lines.append("")
-    for when_str, title, description in records:
-        prefix = when_str or "unspecified date"
-        if title:
-            if description:
-                lines.append(f"- {prefix} — **{title}**: {description}")
-            else:
-                lines.append(f"- {prefix} — **{title}**")
-        else:
-            if description:
-                lines.append(f"- {prefix}: {description}")
-            else:
-                lines.append(f"- {prefix}")
-    lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _build_markdown_document(
-    explanations: Sequence[Any],
-    terms: Sequence[Any],
-    events: Sequence[Any],
-) -> str:
-    """Compose the full Markdown brief from component sections."""
-    title, overview_md = _build_overview_section(explanations)
-    terms_md = _build_terms_section(terms)
-    timeline_md = _build_timeline_section(events)
-
-    parts: list[str] = []
-    parts.append(f"# {title}")
-    parts.append("")
-    parts.append(overview_md.strip())
-
-    if terms_md.strip():
-        parts.append("")
-        parts.append(terms_md.strip())
-
-    if timeline_md.strip():
-        parts.append("")
-        parts.append(timeline_md.strip())
-
-    return "\n".join(parts).rstrip() + "\n"
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_content},
+    ]
 
 
 def run_brief_builder(
@@ -262,47 +131,72 @@ def run_brief_builder(
     run_id: str = "run",
     reports_dir: Path | str | None = None,
 ) -> Result[Path, str]:
-    """Build a Markdown public brief from artifacts on the blackboard.
+    """
+    Run the AI Brief Builder to compose a Markdown report.
 
     Parameters
     ----------
     bb:
-        Shared blackboard instance populated by previous agents.
+        Shared blackboard instance.
     run_id:
-        Logical identifier for this pipeline run. Used to build the output
-        filename as ``<run_id>.md`` under the reports directory.
+        Identifier for the filename.
     reports_dir:
-        Optional override for the reports directory. If not provided,
-        ``artifacts/reports`` is used.
+        Directory to save the file.
 
     Returns
     -------
     Result[Path, str]
-        Ok(path) with the generated Markdown file path on success,
-        Err(message) with a human-readable error otherwise.
+        Path to the generated file on success.
     """
-    explanations_raw = bb.get(_EXPLANATIONS_KEY)
-    terms_raw = bb.get(_TERMS_KEY)
-    timeline_raw = bb.get(_TIMELINE_KEY)
+    # 1. Prepare Data
+    context_str = _serialize_artifacts(bb)
 
-    explanations = _as_list(explanations_raw)
-    terms = _as_list(terms_raw)
-    events = _as_list(timeline_raw)
+    # If the context is essentially empty (just "{}"), we should probably fail
+    # or return a warning, but let's see if the LLM can handle "No data".
+    # For safety, let's enforce at least some content.
+    if len(context_str) < 10:
+        return err("brief_builder: No artifacts found on blackboard to compose.")
 
-    if not explanations and not terms and not events:
-        return err(
-            "brief_builder requires at least one of "
-            "`explanations`, `terms`, or `timeline_events` on the blackboard",
+    # 2. Call LLM
+    client = _get_llm_client()
+    messages = _build_editor_prompt(context_str)
+
+    try:
+        markdown_content = client.generate(
+            messages,
+            model=_BUILDER_MODEL_ALIAS,
+            # We use a slightly higher temperature for "Creative Layout" tasks,
+            # but model registry defaults (0.4) will override this if we don't set it.
+            # Let's set it explicitly to encourage better writing flow.
+            temperature=0.7,
+            max_tokens=2000,
         )
+    except Exception as exc:
+        return err(f"brief_builder LLM error: {exc}")
 
-    markdown = _build_markdown_document(explanations, terms, events)
+    # 3. Clean and Save
+    # Remove markdown fences if the model included them despite instructions
+    clean_md = markdown_content.strip()
+    if clean_md.startswith("```markdown"):
+        clean_md = clean_md.replace("```markdown", "", 1)
+    if clean_md.startswith("```"):
+        clean_md = clean_md.replace("```", "", 1)
+    if clean_md.endswith("```"):
+        clean_md = clean_md[:-3]
 
-    reports_path = _ensure_reports_dir(reports_dir or _DEFAULT_REPORTS_DIR)
+    clean_md = clean_md.strip()
+
+    reports_path = Path(reports_dir) if reports_dir else _DEFAULT_REPORTS_DIR
+    reports_path.mkdir(parents=True, exist_ok=True)
+
     filename = f"{run_id}.md" if run_id else "brief.md"
     output_path = reports_path / filename
-    output_path.write_text(markdown, encoding="utf-8")
 
-    # Store the resulting path back on the blackboard for downstream consumers.
+    try:
+        output_path.write_text(clean_md, encoding="utf-8")
+    except OSError as exc:
+        return err(f"brief_builder I/O error: {exc}")
+
     bb.put(_PUBLIC_BRIEF_MD_KEY, str(output_path))
 
     return ok(output_path)

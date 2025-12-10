@@ -177,7 +177,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     # Brief builder — final assembly into Markdown / brief formats.
     # Uses OpenAI GPT-4o-mini for low-cost, fast formatting and stitching.
     "brief_builder": ModelConfig(
-        name="gpt-4o-mini",
+        name="gpt-4o",
         provider="openai",
         base_url="https://api.openai.com/v1",
         max_tokens=16384,
