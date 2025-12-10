@@ -1,0 +1,7 @@
+{
+  "extraPaths": ["./src"],
+  "exclude": ["**/__pycache__", ".venv", ".uv", "artifacts"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "standard"
+}

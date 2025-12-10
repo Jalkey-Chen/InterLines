@@ -1,0 +1,25 @@
+# Pre-commit configuration for linting and formatting.
+# Install: `uv tool run pre-commit install`
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.8
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        # Ensure mypy's isolated env has the same runtime deps needed for typing
+        additional_dependencies:
+          - pydantic>=2.8.0
+          - pydantic-settings>=2.2.1
+          - fastapi>=0.115.0
+          - requests>=2.32.0
+          - uvicorn>=0.30.0
+          - httpx>=0.27.0 
+        args:
+          - --strict
+          - --python-version=3.11

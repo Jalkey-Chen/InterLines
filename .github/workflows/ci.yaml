@@ -1,0 +1,42 @@
+name: CI (pre-commit • uv • pytest)
+
+on:
+  push:
+    branches: [ dev, main, "feature/**", "chore/**", "fix/**" ]
+  pull_request:
+    branches: [ dev, main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # --- Run the EXACT same hooks as local (ruff-format, mypy, etc.) ----------
+      - name: Pre-commit (ruff + ruff-format + mypy + line endings)
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files
+        # Uses your `.pre-commit-config.yaml` (which pins ruff via rev=v0.6.8 and
+        # includes mixed-line-ending/end-of-file-fixer). This eliminates local/CI drift.
+
+      # --- Runtime tests with uv-managed env -----------------------------------
+      - name: Install uv
+        run: |
+          pipx install uv
+
+      - name: Sync deps (all groups)
+        run: |
+          uv sync --all-groups
+
+      - name: Pytest
+        run: |
+          uv run pytest -q
