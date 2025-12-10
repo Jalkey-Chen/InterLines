@@ -32,7 +32,7 @@ def test_replan_triggered_on_low_readability() -> None:
     - Total calls: Explainer=2, Citizen=2, Editor=2.
     - Blackboard contains the 'planner_plan_spec.replan' artifact.
     """
-    input_data = "Complex text needing refinement."  # Renamed variable
+    input_data = "Complex text needing refinement."
 
     # -----------------------------------------------------------------------
     # 1. Define Contracts (Plans & Reports)
@@ -102,11 +102,15 @@ def test_replan_triggered_on_low_readability() -> None:
         bb.put("review_report", low_quality_report.model_dump())
         return ok(low_quality_report)
 
+    # FIX: mock_brief should write to BB like the real agent (Side Effect)
+    # The real BriefBuilder writes the file path to 'public_brief_md_path'.
+    def mock_brief(bb: Blackboard, **kwargs: Any) -> Any:
+        bb.put("public_brief_md_path", "path/to/stub.md")
+        return ok("path/to/stub.md")
+
     # Stub other agents to keep pipeline happy
     mock_parser = MagicMock(return_value=[{"id": "p1", "text": "stub"}])
     mock_jargon = MagicMock(return_value=ok([]))
-    # Note: run_brief_builder returns Result[Path, str], path string inside Result
-    mock_brief = MagicMock(return_value=ok("path/to/stub.md"))
     mock_history = MagicMock(return_value=ok([]))
 
     # -----------------------------------------------------------------------
@@ -131,7 +135,8 @@ def test_replan_triggered_on_low_readability() -> None:
         ),
         patch("interlines.pipelines.public_translation.run_jargon", mock_jargon),
         patch("interlines.pipelines.public_translation.run_history", mock_history),
-        patch("interlines.pipelines.public_translation.run_brief_builder", mock_brief),
+        # Patch the BriefBuilder with our side-effect mock
+        patch("interlines.pipelines.public_translation.run_brief_builder", side_effect=mock_brief),
     ):
         # Configure the Planner Mock
         planner_instance = MockPlannerCls.return_value
@@ -139,7 +144,6 @@ def test_replan_triggered_on_low_readability() -> None:
         planner_instance.replan.return_value = replan_spec  # Phase 2
 
         # Run Pipeline
-        # Fixed: Use input_data arg
         result = run_pipeline(input_data=input_data, use_llm_planner=True)
         bb = result["blackboard"]
 
