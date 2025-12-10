@@ -53,7 +53,8 @@ def test_trace_writes_files(tmp_path: Path, monkeypatch: Any) -> None:
     assert payload["revision"] == 1
     assert payload["note"] == "init"
     assert payload["data"]["title"] == "PKI"
-    assert "created_at" in payload and payload["created_at"].endswith("Z")
+    # Updated: verify 'timestamp' instead of old 'created_at'
+    assert "timestamp" in payload and payload["timestamp"].endswith("Z")
 
     # A second snapshot produces a second file
     bb.put("x", 2)
