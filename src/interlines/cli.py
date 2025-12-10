@@ -172,8 +172,14 @@ def _save_run_state(result: PipelineResult, source_file: Path) -> Path:
         "public_brief": result["public_brief"],
         "public_brief_md_path": str(result.get("public_brief_md_path", "")),
         # Serialize blackboard traces (convert TraceSnapshot objects to dicts)
+        # Updated: include 'revision' to match new TraceSnapshot definition
         "traces": [
-            {"note": t.note, "data": t.data, "timestamp": t.timestamp}
+            {
+                "note": t.note,
+                "data": t.data,
+                "timestamp": t.timestamp,
+                "revision": t.revision,
+            }
             for t in result["blackboard"].traces()
         ],
         # Save planner report if it exists
@@ -203,8 +209,10 @@ def _load_run_state(json_path: Path) -> PipelineResult:
     if "traces" in data:
         for t_dict in data["traces"]:
             # We construct TraceSnapshot objects so bb.traces() works
+            # Updated: Added 'revision' field with 0 default for backward compat
             snap = TraceSnapshot(
                 timestamp=t_dict.get("timestamp", ""),
+                revision=t_dict.get("revision", 0),
                 note=t_dict.get("note"),
                 data=t_dict.get("data", {}),
             )

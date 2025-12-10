@@ -34,6 +34,8 @@ class TraceSnapshot:
     timestamp : str
         ISO-8601 formatted timestamp string (e.g., "2023-10-27T10:00:00.123Z").
         Represents the exact UTC time when this snapshot was captured.
+    revision : int
+        The sequential revision number of the blackboard at capture time.
     note : str | None
         Optional human-readable label (e.g., 'after planner step 1').
         Used for filtering and display in the CLI trace inspector.
@@ -43,5 +45,6 @@ class TraceSnapshot:
     """
 
     timestamp: str
+    revision: int
     note: str | None
     data: dict[str, Any] = field(default_factory=dict)

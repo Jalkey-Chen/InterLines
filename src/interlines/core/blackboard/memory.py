@@ -160,6 +160,7 @@ class Blackboard:
 
         snap = TraceSnapshot(
             timestamp=ts_str,
+            revision=self._rev,
             note=note,
             data=data_copy,
         )
