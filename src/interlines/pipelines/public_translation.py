@@ -151,21 +151,18 @@ def _build_public_brief_fallback(
     cards: list[ExplanationCard],
 ) -> PublicBrief:
     """
-    Construct a fallback in-memory PublicBrief object for the API JSON response.
-
-    This ensures the 'public_brief' key in the output is populated even though
-    the actual report generation happens in the BriefBuilder (Markdown).
+    Construct a fallback in-memory PublicBrief object.
+    This ensures the 'public_brief' key in the output is populated.
     """
     raw = [_artifact_to_dict(c) for c in cards]
 
-    # Simple synthesis logic for the JSON payload
     summary_parts = []
     for c in raw:
         text = c.get("summary") or c.get("text") or c.get("claim")
         if text:
             summary_parts.append(str(text).strip())
 
-    summary = "\n\n".join(summary_parts[:3])  # Limit summary length
+    summary = "\n\n".join(summary_parts[:3])
 
     sections: list[BriefSection] = []
     if raw:
@@ -184,8 +181,10 @@ def _build_public_brief_fallback(
         title=PIPELINE_BRIEF_TITLE,
         summary=summary,
         sections=sections,
-        # Explicitly populate required fields with safe defaults to satisfy Pydantic
+        # --- FIX: Explicitly pass missing fields to satisfy Pylance/Pydantic ---
+        # We use the input cards to populate the explanations list
         explanations=cards,
+        # Default empty lists for others
         timeline=[],
         evolution_narrative=None,
         glossary=[],

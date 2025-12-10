@@ -98,7 +98,7 @@ Quantum computers use **qubits**. Unlike classical bits, qubits exist in superpo
 
     # Check Content Inclusion (The "Soul" check)
     # We verify that the AI actually wrote the inputs we gave it
-    assert "Quantum computers use qubits" in content
+    assert "Quantum computers use **qubits**" in content
     assert "Superposition" in content
 
     # Check Blackboard Update
