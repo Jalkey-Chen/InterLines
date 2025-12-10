@@ -159,7 +159,7 @@ uv run interlines replay artifacts/runs/20251209_xxxx_paper.json
 ```
 
 ### Demo
-<img src="docs/assets/screenshot.png" alt="InterLines CLI screenshot" width="auto" height="auto"
+<img src="docs/assets/screenshot.png" alt="InterLines CLI screenshot" width="auto" height="auto">
 
 -----
 
