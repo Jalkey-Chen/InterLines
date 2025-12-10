@@ -206,13 +206,34 @@ class PlannerAgent:
     # ------------------------------------------------------------------ #
 
     def _initial_system_prompt(self) -> str:
+        """
+        Construct the System Prompt for the Initial Planning phase.
+
+        Updates (Fixing Over-optimization):
+        - Added strict guidelines to enforce 'translate' for technical docs.
+        - Clarified the dependencies between steps (e.g. brief requires translate).
+        """
         return (
             "You are the PlannerAgent in the InterLines (PKI) system. "
             "Your job is to design an efficient sequence of analysis steps "
             "that transforms an expert-facing document into a clear, "
             "public-friendly brief.\n\n"
-            "Allowed logical steps:\n"
-            "  - parse, translate, citizen, jargon, timeline, narrate, review, brief\n\n"
+            "**Allowed Logical Steps:**\n"
+            "  - parse: Extract text (Mandatory start).\n"
+            "  - translate: Core explanation engine (produces ExplanationCards).\n"
+            "  - citizen: Audience relevance analysis.\n"
+            "  - jargon: Terminology extraction.\n"
+            "  - timeline: Historical event extraction.\n"
+            "  - narrate: (Legacy) groups citizen/jargon.\n"
+            "  - review: Editor quality check.\n"
+            "  - brief: Markdown assembly (Mandatory end).\n\n"
+            "**Critical Guidelines:**\n"
+            "1. **Research Papers & Technical Reports:** You MUST include the 'translate' step. "
+            "   Skipping 'translate' leads to empty summaries. Do not optimize it away.\n"
+            "2. **Simple/Short Texts:** You may skip 'timeline' or 'jargon' if irrelevant.\n"
+            "3. **User Requests:** If `history_requested` is true, you MUST include 'timeline'.\n"
+            "4. **Standard flow:** parse -> translate -> [jargon/citizen/timeline] -> "
+            "review -> brief.\n\n"
             "Return ONLY a single JSON object with this shape:\n"
             "{\n"
             '  "steps": ["parse", "translate", ...],\n'
@@ -220,7 +241,7 @@ class PlannerAgent:
             '  "readability_threshold": 0.75,\n'
             '  "factuality_threshold": 0.80,\n'
             '  "max_refine_rounds": 1,\n'
-            '  "notes": "Rationale..."\n'
+            '  "notes": "Rationale for the plan..."\n'
             "}"
         )
 
@@ -234,17 +255,23 @@ class PlannerAgent:
             else:
                 preview = str(first)
 
-        preview = preview.strip()[:800]  # Slightly larger context window
+        # FIX: Increased context window from 800 -> 2000 chars.
+        # This ensures the Planner sees the Abstract, Intro, and Metadata of research papers,
+        # preventing it from incorrectly classifying them as "simple text".
+        preview = preview.strip()[:2000]
 
         return (
-            "Document preview:\n"
+            "Document Preview (First 2000 chars):\n"
             f"{preview or '[no preview available]'}\n\n"
-            "Context:\n"
-            f"- task_type: {ctx.task_type}\n"
-            f"- document_kind: {ctx.document_kind}\n"
-            f"- language: {ctx.language}\n"
-            f"- history_requested: {ctx.enable_history_requested}\n\n"
-            "Return ONLY JSON."
+            "Execution Context:\n"
+            f"- Task Type: {ctx.task_type}\n"
+            f"- Document Kind: {ctx.document_kind}\n"
+            f"- Language: {ctx.language}\n"
+            f"- History Requested: {ctx.enable_history_requested}\n\n"
+            "Instructions:\n"
+            "Based on the preview, decide the necessary steps. "
+            "If this looks like a research paper (e.g. has Abstract, Introduction), "
+            "ensure 'translate' and 'jargon' are included."
         )
 
     def plan(self, bb: Blackboard, ctx: PlannerContext) -> PlannerPlanSpec:

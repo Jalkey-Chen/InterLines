@@ -3,6 +3,12 @@ End-to-end tests for the public-translation pipeline, using optional stubs.
 
 These tests exercise the wiring in ``interlines.pipelines.public_translation``.
 Refactored to move inner functions to module level to reduce cyclomatic complexity.
+
+Updates
+-------
+- Stubs now side-effect by writing to the Blackboard (bb.put), matching the
+  behavior of real agents. This is required because the pipeline no longer
+  auto-persists agent return values.
 """
 
 from __future__ import annotations
@@ -25,96 +31,102 @@ from interlines.pipelines.public_translation import (
 
 
 def _fake_run_explainer(bb: Blackboard) -> Any:
-    return ok(
-        [
-            {
-                "kind": "explanation.stub",
-                "version": "1.0.0",
-                "confidence": 1.0,
-                "claim": "Stub explanation for testing.",
-                "rationale": "This is a stub rationale produced by the test suite.",
-                "summary": "Stub summary of explanation.",
-                "text": "Stub explanation for testing.",
-                "evidence": [],
-            }
-        ]
-    )
+    """Stub explainer: write dummy cards to blackboard and return them."""
+    data = [
+        {
+            "kind": "explanation.stub",
+            "version": "1.0.0",
+            "confidence": 1.0,
+            "claim": "Stub explanation for testing.",
+            "rationale": "This is a stub rationale produced by the test suite.",
+            "summary": "Stub summary of explanation.",
+            "text": "Stub explanation for testing.",
+            "evidence": [],
+        }
+    ]
+    # Critical: Real agents write to BB; stubs must too.
+    bb.put("explanations", data)
+    return ok(data)
 
 
 def _fake_run_citizen(bb: Blackboard) -> Any:
-    return ok(
-        [
-            {
-                "kind": "relevance_note.stub",
-                "version": "1.0.0",
-                "confidence": 0.9,
-                "target": "stub-target",
-                "rationale": "Stub reason why this matters to the reader.",
-                "score": 0.9,
-            }
-        ]
-    )
+    """Stub citizen: write dummy notes to blackboard and return them."""
+    data = [
+        {
+            "kind": "relevance_note.stub",
+            "version": "1.0.0",
+            "confidence": 0.9,
+            "target": "stub-target",
+            "rationale": "Stub reason why this matters to the reader.",
+            "score": 0.9,
+        }
+    ]
+    bb.put("relevance_notes", data)
+    return ok(data)
 
 
 def _fake_run_jargon(bb: Blackboard) -> Any:
-    return ok(
-        [
-            {
-                "kind": "term.stub",
-                "version": "1.0.0",
-                "confidence": 0.8,
-                "term": "stub term",
-                "definition": "A placeholder term used only in tests.",
-                "aliases": ["stub-term"],
-                "examples": ["This pipeline uses a stub term in tests."],
-                "sources": [],
-            }
-        ]
-    )
+    """Stub jargon: write dummy terms to blackboard and return them."""
+    data = [
+        {
+            "kind": "term.stub",
+            "version": "1.0.0",
+            "confidence": 0.8,
+            "term": "stub term",
+            "definition": "A placeholder term used only in tests.",
+            "aliases": ["stub-term"],
+            "examples": ["This pipeline uses a stub term in tests."],
+            "sources": [],
+        }
+    ]
+    bb.put("terms", data)
+    return ok(data)
 
 
 def _fake_run_history(bb: Blackboard) -> Any:
+    """Stub history: write dummy events to blackboard and return them."""
     # We can't easily check 'enable_history' here without a closure,
     # so we return a default event. The test logic handles conditional checking.
-    return ok(
-        [
-            {
-                "kind": "timeline_event.stub",
-                "version": "1.0.0",
-                "confidence": 0.6,
-                "when": "2000-01-01",
-                "title": "Stub historical event",
-                "description": "A fake event used to test the history branch.",
-                "tags": ["test"],
-                "sources": [],
-            }
-        ]
-    )
+    data = [
+        {
+            "kind": "timeline_event.stub",
+            "version": "1.0.0",
+            "confidence": 0.6,
+            "when": "2000-01-01",
+            "title": "Stub historical event",
+            "description": "A fake event used to test the history branch.",
+            "tags": ["test"],
+            "sources": [],
+        }
+    ]
+    bb.put("timeline_events", data)
+    return ok(data)
 
 
 def _fake_run_editor(bb: Blackboard) -> Any:
-    return ok(
-        {
-            "kind": "review_report.stub",
+    """Stub editor: write dummy report to blackboard and return it."""
+    data = {
+        "kind": "review_report.stub",
+        "version": "1.0.0",
+        "confidence": 1.0,
+        "overall": 1.0,
+        "criteria": {
+            "kind": "review_criteria.stub",
             "version": "1.0.0",
             "confidence": 1.0,
-            "overall": 1.0,
-            "criteria": {
-                "kind": "review_criteria.stub",
-                "version": "1.0.0",
-                "confidence": 1.0,
-                "readability": 1.0,
-                "factuality": 1.0,
-                "bias": 1.0,
-                "accuracy": 1.0,
-                "clarity": 1.0,
-                "completeness": 1.0,
-                "safety": 1.0,
-            },
-            "comments": ["All checks passed in the stubbed editor."],
-            "actions": [],
-        }
-    )
+            "readability": 1.0,
+            "factuality": 1.0,
+            "bias": 1.0,
+            "accuracy": 1.0,
+            "clarity": 1.0,
+            "completeness": 1.0,
+            "safety": 1.0,
+        },
+        "comments": ["All checks passed in the stubbed editor."],
+        "actions": [],
+    }
+    bb.put("review_report", data)
+    return ok(data)
 
 
 def _fake_run_brief_builder(

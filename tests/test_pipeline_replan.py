@@ -1,4 +1,3 @@
-# tests/test_pipeline_replan.py
 """
 Integration tests for the Single-Round Replan logic (Step 5.3).
 
@@ -8,6 +7,11 @@ This module verifies that the pipeline correctly handles the feedback loop:
 3.  Planner inspects the report and triggers a replan.
 4.  Pipeline constructs a transient DAG and executes refinement steps.
 5.  Artifacts are updated and the Editor runs a second time.
+
+Updates
+-------
+- Mocks updated to persist data to Blackboard (simulating real Agent behavior)
+  to satisfy pipeline dependency checks.
 """
 
 from __future__ import annotations
@@ -87,24 +91,47 @@ def test_replan_triggered_on_low_readability() -> None:
         "editor": 0,
     }
 
+    # FIX: Real agents write to Blackboard. Stubs must do the same.
+    # Also, we must provide non-empty lists so the pipeline guards don't skip subsequent steps.
     def mock_explainer(bb: Blackboard) -> Any:
         call_counts["explainer"] += 1
-        return ok([])  # Return empty list of cards
+        dummy_cards = [
+            {
+                "kind": "explanation.stub",
+                "version": "1.0.0",
+                "confidence": 1.0,
+                "claim": "Stub claim",
+                "rationale": "Stub rationale",
+                "evidence": [],
+            }
+        ]
+        bb.put("explanations", dummy_cards)
+        return ok(dummy_cards)
 
     def mock_citizen(bb: Blackboard) -> Any:
         call_counts["citizen"] += 1
-        return ok([])  # Return empty list of notes
+        dummy_notes = [
+            {
+                "kind": "relevance.stub",
+                "version": "1.0.0",
+                "confidence": 0.9,
+                "target": "Stub target",
+                "rationale": "Stub rationale",
+                "score": 0.5,
+            }
+        ]
+        bb.put("relevance_notes", dummy_notes)
+        return ok(dummy_notes)
 
     def mock_editor(bb: Blackboard) -> Any:
         call_counts["editor"] += 1
         # Fixed: Explicitly write the report to Blackboard so Pipeline sees it!
-        # The real agent does this; our mock must simulate it.
         bb.put("review_report", low_quality_report.model_dump())
         return ok(low_quality_report)
 
-    # FIX: mock_brief should write to BB like the real agent (Side Effect)
-    # The real BriefBuilder writes the file path to 'public_brief_md_path'.
+    # Note: run_brief_builder returns Result[Path, str], path string inside Result
     def mock_brief(bb: Blackboard, **kwargs: Any) -> Any:
+        # Brief builder also writes to BB
         bb.put("public_brief_md_path", "path/to/stub.md")
         return ok("path/to/stub.md")
 
@@ -135,7 +162,6 @@ def test_replan_triggered_on_low_readability() -> None:
         ),
         patch("interlines.pipelines.public_translation.run_jargon", mock_jargon),
         patch("interlines.pipelines.public_translation.run_history", mock_history),
-        # Patch the BriefBuilder with our side-effect mock
         patch("interlines.pipelines.public_translation.run_brief_builder", side_effect=mock_brief),
     ):
         # Configure the Planner Mock

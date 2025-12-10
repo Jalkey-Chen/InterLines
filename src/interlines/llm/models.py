@@ -141,7 +141,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     # Citizen — public-facing voice, style & persona control.
     # Uses DeepSeek V3.2 for accessible, conversational tone.
     "citizen": ModelConfig(
-        name="deepseek-v3.2",
+        name="deepseek-reasoner",
         provider="deepseek",
         base_url="https://api.deepseek.com/v1",
         max_tokens=64000,

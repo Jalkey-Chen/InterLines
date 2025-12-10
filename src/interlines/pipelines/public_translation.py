@@ -254,59 +254,54 @@ def _execute_step(
     """
     Execute a single logical step in the pipeline.
 
-    This helper centralizes the dispatch logic, mapping abstract DAG node
-    labels (e.g., "translate", "explainer_refine") to concrete Agent calls.
-    It supports both the **Initial Phase** and the **Replan Phase**.
-
-    Parameters
-    ----------
-    step:
-        Logical step name from the Planner's ``steps`` or ``replan_steps``.
-    input_data:
-        Raw input text OR file path (passed to the Parser Agent).
-    bb:
-        Shared blackboard instance.
-    worker_llm:
-        Optional LLM client for agents that require it.
+    Updates:
+    - Added explicit handling for 'citizen' and 'jargon'.
+    - CRITICAL FIX: Removed `bb.put` calls that were overwriting Agent
+      objects (Pydantic models) with Dicts. Agents are responsible for
+      writing to the blackboard, and they write objects, which preserves
+      contracts for downstream agents (e.g. Citizen expecting ExplanationCard).
     """
     if step == "parse":
-        # Parser uses the "balanced" model to intelligently split PDFs.
-        parsed_chunks_raw = parser_agent(input_data, bb, llm=worker_llm)
-        bb.put(_PARSED_CHUNKS_KEY, parsed_chunks_raw)
+        # Parser agent writes to blackboard internally (list[dict]).
+        parser_agent(input_data, bb, llm=worker_llm)
 
-    elif step in ("translate", "explainer_refine"):
-        # "translate" = Initial Pass; "explainer_refine" = Replan Pass
-        # Both use the same agent, which reads/writes "explanations"
+    elif step in ("translate", "explainer", "explainer_refine"):
+        # Explainer agent writes to blackboard internally (list[ExplanationCard]).
         explainer_res = run_explainer(bb)
-        cards = _unwrap_or_fail("explainer_agent", explainer_res)
-        bb.put(_EXPLANATIONS_KEY, [_artifact_to_dict(c) for c in cards])
+        _unwrap_or_fail("explainer_agent", explainer_res)
         bb.trace(f"step '{step}' finished")
 
-    elif step in ("narrate", "citizen_refine"):
-        # "narrate" = Initial Pass; "citizen_refine" = Replan Pass
+    elif step in ("narrate", "citizen", "citizen_refine"):
+        # Guard: Citizen agent requires explanations.
+        if not bb.get(_EXPLANATIONS_KEY):
+            print(f"   [WARN] Skipping '{step}' because no explanations found on blackboard.")
+            return
+
+        # Citizen agent writes to blackboard internally (list[RelevanceNote]).
         citizen_res = run_citizen(bb)
-        notes = _unwrap_or_fail("citizen_agent", citizen_res)
-        bb.put(_RELEVANCE_NOTES_KEY, [_artifact_to_dict(n) for n in notes])
+        _unwrap_or_fail("citizen_agent", citizen_res)
         bb.trace(f"step '{step}' finished")
 
     elif step in ("jargon", "jargon_refine"):
+        # Jargon agent writes to blackboard internally (list[TermCard]).
         jargon_res = run_jargon(bb)
-        terms = _unwrap_or_fail("jargon_agent", jargon_res)
-        bb.put(_TERMS_KEY, [_artifact_to_dict(t) for t in terms])
+        _unwrap_or_fail("jargon_agent", jargon_res)
+        bb.trace(f"step '{step}' finished")
 
-    elif step in ("timeline", "history_refine"):
+    elif step in ("timeline", "history", "history_refine"):
+        # History agent writes to blackboard internally (list[TimelineEvent]).
         history_res = run_history(bb)
-        events = _unwrap_or_fail("history_agent", history_res)
-        bb.put(_TIMELINE_KEY, [_artifact_to_dict(e) for e in events])
+        _unwrap_or_fail("history_agent", history_res)
+        bb.trace(f"step '{step}' finished")
 
     elif step in ("review", "editor"):
-        # "review" = Initial Pass; "editor" = Re-verification Pass
+        # Editor agent writes to blackboard internally (ReviewReport).
         editor_res = run_editor(bb)
         _unwrap_or_fail("editor_agent", editor_res)
         bb.trace(f"step '{step}' finished")
 
     elif step == "brief":
-        # Final Sink: Generate Markdown Report
+        # Brief builder writes MD path to blackboard internally.
         brief_res = run_brief_builder(bb, run_id="latest")
         path = _unwrap_or_fail("brief_builder_agent", brief_res)
         print(f"   [Pipeline] Brief generated at: {path}")
@@ -323,14 +318,11 @@ def _create_planner_context(input_data: str | Path, enable_history: bool) -> Pla
 
     if isinstance(input_data, Path):
         doc_kind = input_data.suffix.lstrip(".")
-        # We don't read the full file just for the planner prompt context.
     elif isinstance(input_data, str):
         if len(input_data) < 256 and Path(input_data).exists():
-            # Heuristic: if string looks like a path, treat it as one.
             p = Path(input_data)
             doc_kind = p.suffix.lstrip(".")
         else:
-            # Raw text
             char_count = len(input_data)
 
     return PlannerContext(
@@ -366,54 +358,33 @@ def _attempt_refinement(
     input_data: str | Path,
     worker_llm: LLMClient | None,
 ) -> PlannerPlanSpec | None:
-    """
-    Inspect the ReviewReport and trigger refinement if needed.
-
-    Logic:
-    1. Check if a ReviewReport exists on the blackboard.
-    2. Ask the PlannerAgent to evaluate it.
-    3. If `should_replan` is True, construct a transient DAG.
-    4. Execute the refinement DAG.
-
-    Returns
-    -------
-    PlannerPlanSpec | None
-        The replan specification if refinement occurred, else None.
-    """
+    """Inspect the ReviewReport and trigger refinement if needed."""
     review_report_raw = bb.get(_REVIEW_REPORT_KEY)
     if not review_report_raw:
         return None
 
-    # Ensure report is a Pydantic object
+    # Handle both Dict (if manually deserialized) and Object (if from Agent)
     report_data = review_report_raw
     if isinstance(report_data, dict):
         try:
             report_data = ReviewReport(**report_data)
         except Exception:
-            # If report is malformed, skip refinement safely
             return None
 
     if not isinstance(report_data, ReviewReport):
         return None
 
-    # Ask Planner for decision
     replan_spec = planner.replan(bb, ctx, plan_spec, report_data)
 
     if replan_spec.should_replan and replan_spec.replan_steps:
         bb.put(_PLANNER_REPLAN_KEY, replan_spec.model_dump())
-
-        # --- CRITICAL TRACE ---
-        # This trace is required by E2E tests to verify replan activation.
         bb.trace(f"planner: triggering replan -> {replan_spec.replan_steps}")
 
-        # Execute Refinement DAG
         refine_dag = DAG.from_plan_spec(
             plan_spec.model_copy(update={"steps": replan_spec.replan_steps})
         )
         _execute_dag(refine_dag, input_data, bb, worker_llm)
 
-        # Force re-run of brief builder if not explicitly planned
-        # This ensures the final Markdown file reflects the refined content.
         if "brief" not in replan_spec.replan_steps:
             _execute_step("brief", input_data, bb, worker_llm)
 
@@ -432,81 +403,36 @@ def run_pipeline(
     enable_history: bool = False,
     use_llm_planner: bool = True,
 ) -> PipelineResult:
-    """
-    DAG-driven pipeline entry point with Single-Round Replanning (Step 5.3).
-
-    This function orchestrates the full lifecycle of a translation request:
-    1. **Plan**: Consults the Planner (LLM or Rule) to get an execution plan.
-    2. **Execute**: Runs the initial DAG (Phase 1).
-    3. **Evaluate**: Checks the ``ReviewReport`` generated by the Editor.
-    4. **Replan (Optional)**: If quality is low, asks Planner for refinement steps.
-    5. **Refine**: Executes the refinement DAG (Phase 2).
-    6. **Assemble**: Collects final artifacts into a result payload.
-
-    Parameters
-    ----------
-    input_data:
-        Raw input text OR a pathlib.Path to a file (PDF, DOCX, TXT).
-        The ParserAgent will handle file extraction automatically.
-    enable_history:
-        User preference for including the history/timeline branch.
-    use_llm_planner:
-        If ``True``, uses :class:`PlannerAgent` for routing and replanning.
-        If ``False``, uses legacy rule-based planning (no replan capability).
-
-    Returns
-    -------
-    PipelineResult
-        A dictionary containing the Blackboard state, artifacts, and outputs.
-    """
-    # =========================================================================
-    # 0. Initialization
-    # =========================================================================
+    """Orchestrate the Public Translation Pipeline."""
+    # 1. Setup
     bb = Blackboard()
-    # Store input for observability.
     bb.put("input_data", str(input_data))
-
-    # Initialize a shared LLM client for agents that need it (Parser, Planner).
     worker_llm = LLMClient.from_env(default_model_alias="planner")
 
-    # =========================================================================
-    # 1. Phase 1: Initial Planning
-    # =========================================================================
+    # 2. Plan (Phase 1)
     ctx = _create_planner_context(input_data, enable_history)
     planner: PlannerAgent | None = None
 
     if use_llm_planner:
-        # Use LLM-backed planner for dynamic routing
         planner = PlannerAgent(llm=worker_llm)
         plan_spec = planner.plan(bb, ctx)
     else:
-        # Fallback to deterministic rules (Legacy Step 5.1)
         plan_spec, _ = build_plan(enable_history)
 
     dag = DAG.from_plan_spec(plan_spec)
-
-    # Persist plan provenance
     bb.put(_PLANNER_PLAN_KEY, plan_spec.model_dump())
     bb.put(_PLANNER_DAG_KEY, dag.to_payload())
-    # Ensure this trace matches E2E test expectations exactly
     bb.trace("planner: phase 1 plan")
 
-    # =========================================================================
-    # 2. Phase 1: Execution (Initial Pass)
-    # =========================================================================
+    # 3. Execute (Phase 1)
     _execute_dag(dag, input_data, bb, worker_llm)
 
-    # =========================================================================
-    # 3. Phase 2: Intelligent Replan (Step 5.3)
-    # =========================================================================
+    # 4. Review & Refine (Phase 2)
     replan_spec: PlannerPlanSpec | None = None
     if use_llm_planner and planner:
         replan_spec = _attempt_refinement(bb, planner, ctx, plan_spec, input_data, worker_llm)
 
-    # =========================================================================
-    # 4. Phase 3: Reporting & Final Assembly (Step 5.4)
-    # =========================================================================
-    # Generate the executive summary of the planner's decisions.
+    # 5. Reporting & Assembly (Phase 3)
     plan_report = PlanReport(
         strategy=plan_spec.strategy,
         enable_history=plan_spec.enable_history,
@@ -517,27 +443,26 @@ def run_pipeline(
         notes=plan_spec.notes,
     )
     bb.put(_PLANNER_REPORT_KEY, plan_report.model_dump())
-    # --- FIX: Add the trace that tests were failing on ---
     bb.trace("planner: report written")
 
-    # Build final API payload
+    # Final Assembly:
+    # Retrieve objects from blackboard and serialize them to dicts for the Result.
     cards = cast("list[ExplanationCard]", _as_list(bb.get(_EXPLANATIONS_KEY)))
     brief_model = _build_public_brief_fallback(cards)
     brief_dict = _artifact_to_dict(brief_model)
 
-    # Retrieve the path generated by brief_builder
     md_path = cast(str | None, bb.get(_PUBLIC_BRIEF_MD_KEY))
-
     bb.put(_PUBLIC_BRIEF_KEY, brief_dict)
     bb.trace("pipeline: complete")
 
     return {
         "blackboard": bb,
-        "parsed_chunks": _as_list(bb.get(_PARSED_CHUNKS_KEY)),
-        "explanations": _as_list(bb.get(_EXPLANATIONS_KEY)),
-        "relevance_notes": _as_list(bb.get(_RELEVANCE_NOTES_KEY)),
-        "terms": _as_list(bb.get(_TERMS_KEY)),
-        "timeline_events": _as_list(bb.get(_TIMELINE_KEY)),
+        # Force conversion to dicts for external consumers (API/CLI)
+        "parsed_chunks": [_artifact_to_dict(x) for x in _as_list(bb.get(_PARSED_CHUNKS_KEY))],
+        "explanations": [_artifact_to_dict(x) for x in _as_list(bb.get(_EXPLANATIONS_KEY))],
+        "relevance_notes": [_artifact_to_dict(x) for x in _as_list(bb.get(_RELEVANCE_NOTES_KEY))],
+        "terms": [_artifact_to_dict(x) for x in _as_list(bb.get(_TERMS_KEY))],
+        "timeline_events": [_artifact_to_dict(x) for x in _as_list(bb.get(_TIMELINE_KEY))],
         "public_brief": {
             "title": cast(str, brief_dict.get("title", "")),
             "summary": cast(str, brief_dict.get("summary", "")),
