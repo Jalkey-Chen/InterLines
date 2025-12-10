@@ -1,6 +1,6 @@
 [project]
 name = "interlines"
-version = "0.0.1"
+version = "0.2.0"
 description = "Public Knowledge Interpreter (InterLines) — turn complex papers & policies into accessible public briefs."
 readme = "README.md"
 requires-python = ">=3.11"
