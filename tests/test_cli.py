@@ -18,6 +18,8 @@ Updates
 -------
 - Fixed assertions to check `result.output` (combined stdout/stderr) instead of
   `result.stdout`, as Typer writes validation errors to stderr.
+- Added `runner` fixture to ensure test isolation (avoiding exit code 2 errors).
+- Added debug output to assertions to print CLI output on failure.
 """
 
 from __future__ import annotations
@@ -25,24 +27,32 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from interlines.cli import app
 
-# Initialize the runner.
-# We don't need a fixture for this since it's stateless.
-runner = CliRunner()
+
+@pytest.fixture  # type: ignore[misc]
+def runner() -> CliRunner:
+    """
+    Create a fresh CliRunner for each test.
+
+    This ensures that the internal state of Click/Typer logic is isolated
+    between tests, preventing 'Exit Code 2' (Usage Error) false positives.
+    """
+    return CliRunner()
 
 
-def test_cli_help_shows_usage() -> None:
+def test_cli_help_shows_usage(runner: CliRunner) -> None:
     """Invoking --help should print usage instructions and exit 0."""
     result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"Help failed: {result.output}"
     assert "InterLines" in result.output
     assert "interpret" in result.output
 
 
-def test_interpret_fails_on_missing_file() -> None:
+def test_interpret_fails_on_missing_file(runner: CliRunner) -> None:
     """Typer should enforce `exists=True` for the input file argument."""
     # We provide a path that definitely doesn't exist.
     result = runner.invoke(app, ["interpret", "ghost.pdf"])
@@ -53,7 +63,7 @@ def test_interpret_fails_on_missing_file() -> None:
     assert "does not exist" in result.output
 
 
-def test_interpret_happy_path(tmp_path: Path) -> None:
+def test_interpret_happy_path(runner: CliRunner, tmp_path: Path) -> None:
     """
     Verify the happy path where the pipeline runs successfully.
 
@@ -62,13 +72,16 @@ def test_interpret_happy_path(tmp_path: Path) -> None:
     """
     # 1. Create a dummy file so Typer validation passes
     dummy_file = tmp_path / "paper.pdf"
-    dummy_file.write_text("dummy content")
+    dummy_file.write_text("dummy content", encoding="utf-8")
 
     # 2. Mock the pipeline result (TypedDict structure)
-    # Define complex mocks first to satisfy type checkers
+    # Define complex mocks first to satisfy type checkers and prevent
+    # "object has no attribute" errors in MyPy.
     mock_bb = MagicMock()
+    # Mock traces to return empty list to avoid iteration errors in CLI inspector
     mock_bb.traces.return_value = []
-    mock_bb.get.return_value = None  # No planner report
+    # Mock get() to return None (simulating no planner report)
+    mock_bb.get.return_value = None
 
     mock_result = {
         "blackboard": mock_bb,
@@ -88,10 +101,13 @@ def test_interpret_happy_path(tmp_path: Path) -> None:
     # 3. Patch and Run
     with patch("interlines.cli.run_pipeline", return_value=mock_result) as mock_run:
         # Note: We pass "n" to the "Show execution trace log?" prompt to skip it
+        # The input="n\n" simulates the user pressing 'n' then Enter.
         result = runner.invoke(app, ["interpret", str(dummy_file)], input="n\n")
 
         # 4. Assertions
-        assert result.exit_code == 0
+        # CRITICAL: We print result.output if this assertion fails!
+        assert result.exit_code == 0, f"CLI Failed with Output:\n{result.output}"
+
         assert "Complete!" in result.output
         assert "Mock Brief" in result.output  # Verify rendering
         assert "Key Findings" in result.output
@@ -108,7 +124,7 @@ def test_interpret_happy_path(tmp_path: Path) -> None:
         assert call_kwargs["use_llm_planner"] is True
 
 
-def test_interpret_handles_pipeline_crash(tmp_path: Path) -> None:
+def test_interpret_handles_pipeline_crash(runner: CliRunner, tmp_path: Path) -> None:
     """Ensure exceptions in the pipeline are caught and displayed nicely."""
     dummy_file = tmp_path / "paper.pdf"
     dummy_file.write_text("dummy")
@@ -119,6 +135,10 @@ def test_interpret_handles_pipeline_crash(tmp_path: Path) -> None:
 
         result = runner.invoke(app, ["interpret", str(dummy_file)])
 
-        assert result.exit_code == 1
+        # We expect exit code 1 (Application Error), NOT 2 (Usage Error)
+        # 2 = Bad arguments, 1 = Runtime exception handled by our try/except block
+        assert (
+            result.exit_code == 1
+        ), f"Expected crash (1), got {result.exit_code}. Output:\n{result.output}"
         assert "Pipeline Error" in result.output
         assert "LLM Out of credits" in result.output
