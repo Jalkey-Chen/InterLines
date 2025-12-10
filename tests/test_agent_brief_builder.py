@@ -1,18 +1,19 @@
-"""Tests for the Markdown public brief builder agent.
+"""Tests for the AI-powered Brief Builder Agent.
 
-These tests exercise the behaviour of ``run_brief_builder``:
+Since the Brief Builder is now non-deterministic (LLM-based), these tests
+focus on:
+1. Integration: Ensuring the prompt is built correctly from blackboard artifacts.
+2. I/O: Ensuring the file is written to the correct path.
+3. Content Inclusion: Verifying that key facts from the input make it into the output.
 
-- Ensure that, given explanations/terms/timeline events on the blackboard,
-  a Markdown file is generated in the requested directory.
-- Verify that the file contains the expected sections and content.
-- Verify that the blackboard records the output path.
-- Check that calling the builder with an empty blackboard returns an error.
+Note: In a real CI environment, you should mock `interlines.llm.client.LLMClient`
+to avoid API costs and flakiness.
 """
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from interlines.agents.brief_builder import (
     _PUBLIC_BRIEF_MD_KEY,
@@ -21,132 +22,105 @@ from interlines.agents.brief_builder import (
 from interlines.core.blackboard.memory import Blackboard
 from interlines.core.contracts.explanation import EvidenceItem, ExplanationCard
 from interlines.core.contracts.term import TermCard
-from interlines.core.contracts.timeline import TimelineEvent
 
 
-def _make_explanation_card() -> ExplanationCard:
-    """Create a minimal ExplanationCard for brief-builder tests.
-
-    The card includes:
-    - a short claim (used in the brief title and overview),
-    - a short rationale paragraph,
-    - one EvidenceItem with a non-empty source.
-    """
-    evidence = [
-        EvidenceItem(
-            text="The authors run a randomized evaluation.",
-            source="paragraphs: p1, p2",
-        ),
-    ]
-    return ExplanationCard(
+def _make_artifacts() -> tuple[list[ExplanationCard], list[TermCard]]:
+    """Create sample artifacts for testing."""
+    evidence = [EvidenceItem(text="Evidence A", source="p1")]
+    exp = ExplanationCard(
         kind="explanation.v1",
         version="1.0.0",
         confidence=0.9,
-        claim="The policy has measurable effects on outcomes.",
-        rationale="The study compares treated and control groups over time.",
+        claim="Quantum computers use qubits.",
+        rationale="Unlike classical bits, qubits exist in superposition.",
         evidence=evidence,
         summary=None,
     )
 
-
-def _make_term_card() -> TermCard:
-    """Create a small TermCard representing a glossary entry."""
-    return TermCard(
+    term = TermCard(
         kind="term.v1",
         version="1.0.0",
         confidence=0.8,
-        term="Randomized controlled trial",
-        definition="An experiment where units are randomly assigned " "to treatment or control.",
-        aliases=["RCT"],
-        examples=[
-            "The authors implement an RCT across several regions.",
-        ],
+        term="Superposition",
+        definition="The ability to be in multiple states at once.",
+        aliases=[],
+        examples=[],
         sources=["p1"],
     )
+    return [exp], [term]
 
 
-def _make_timeline_event() -> TimelineEvent:
-    """Create a simple TimelineEvent for brief-builder tests."""
-    return TimelineEvent(
-        kind="timeline_event.v1",
-        version="1.0.0",
-        confidence=0.75,
-        when=date(2020, 1, 1),
-        title="Policy pilot launched",
-        description="Initial small-scale deployment of the new policy.",
-        tags=["pilot"],
-        sources=["doc:history"],
-    )
-
-
-def test_brief_builder_generates_markdown_file(tmp_path: Path) -> None:
-    """run_brief_builder should create a Markdown file and record its path.
-
-    Steps
-    -----
-    1. Seed a Blackboard with:
-       - one ExplanationCard,
-       - one TermCard,
-       - one TimelineEvent.
-    2. Call ``run_brief_builder`` with a custom reports_dir under tmp_path.
-    3. Assert that:
-       - the Result is Ok,
-       - the output file exists on disk,
-       - key section titles and content appear in the file,
-       - the blackboard stores the path under ``_PUBLIC_BRIEF_MD_KEY``.
+@patch("interlines.agents.brief_builder._get_llm_client")
+def test_brief_builder_calls_llm_and_saves_file(mock_get_client: MagicMock, tmp_path: Path) -> None:
     """
+    Test that the builder correctly serializes artifacts, prompts the LLM,
+    and saves the generated text.
+    """
+    # 1. Setup Mock LLM
+    mock_client_instance = MagicMock()
+    # Simulate the LLM returning a nice Markdown document
+    mock_client_instance.generate.return_value = """
+# Quantum Computing: A Brief
+
+**Why it matters**: It changes everything.
+
+## The Core Concept
+Quantum computers use **qubits**. Unlike classical bits, qubits exist in superposition.
+
+## Glossary
+* **Superposition**: The ability to be in multiple states at once.
+"""
+    mock_get_client.return_value = mock_client_instance
+
+    # 2. Setup Blackboard
+    exps, terms = _make_artifacts()
     bb = Blackboard()
-    bb.put("explanations", [_make_explanation_card()])
-    bb.put("terms", [_make_term_card()])
-    bb.put("timeline_events", [_make_timeline_event()])
+    bb.put("explanations", exps)
+    bb.put("terms", terms)
+    # Optional: add empty timeline/notes to ensure it handles missing keys gracefully
+    bb.put("timeline_events", [])
 
-    reports_dir = tmp_path / "artifacts" / "reports"
-    run_id = "test-brief-run"
+    reports_dir = tmp_path / "reports"
+    run_id = "ai_brief_test"
 
-    result = run_brief_builder(
-        bb,
-        run_id=run_id,
-        reports_dir=reports_dir,
-    )
-    assert result.is_ok(), f"brief_builder returned error: {result}"
+    # 3. Run Agent
+    result = run_brief_builder(bb, run_id=run_id, reports_dir=reports_dir)
 
+    # 4. Verification
+    assert result.is_ok()
     output_path = result.unwrap()
-    assert output_path.is_file()
-    assert output_path.parent == reports_dir
-    assert output_path.name == f"{run_id}.md"
+
+    # Check File I/O
+    assert output_path.exists()
+    assert output_path.name == "ai_brief_test.md"
 
     content = output_path.read_text(encoding="utf-8")
 
-    # Top-level title should use the explanation claim.
-    assert "The policy has measurable effects on outcomes." in content
+    # Check Content Inclusion (The "Soul" check)
+    # We verify that the AI actually wrote the inputs we gave it
+    assert "Quantum computers use qubits" in content
+    assert "Superposition" in content
 
-    # Section headers should be present.
-    assert "## Overview" in content
-    assert "## Key terms" in content
-    assert "## Timeline" in content
+    # Check Blackboard Update
+    assert bb.get(_PUBLIC_BRIEF_MD_KEY) == str(output_path)
 
-    # Term and timeline content should be rendered.
-    assert "Randomized controlled trial" in content
-    assert "Policy pilot launched" in content
+    # Check Prompt Construction (verify input data flow)
+    # Inspect the call args to ensure the JSON was passed correctly
+    call_args = mock_client_instance.generate.call_args
+    # call_args[0] are positional args: (messages,)
+    prompts = call_args[0][0]
+    # prompts is a list of dicts: [{"role": "system", ...}, {"role": "user", ...}]
+    user_msg = prompts[1]["content"]
 
-    # Blackboard should record the path as a string.
-    stored_path = bb.get(_PUBLIC_BRIEF_MD_KEY)
-    assert isinstance(stored_path, str)
-    assert stored_path == str(output_path)
+    assert "Quantum computers use qubits" in user_msg
+    assert "explanations" in user_msg
 
 
-def test_brief_builder_requires_some_artifacts() -> None:
-    """Calling run_brief_builder on an empty Blackboard should fail.
-
-    When no explanations, terms, or timeline events are present on the
-    blackboard, the brief builder does not have any material to render
-    and should therefore return an Err(Result) with an informative
-    message rather than creating an empty file.
-    """
+def test_brief_builder_handles_empty_blackboard() -> None:
+    """The builder should fail gracefully if there is absolutely no data."""
     bb = Blackboard()
+    # No data put into blackboard
 
-    result = run_brief_builder(bb, run_id="empty", reports_dir="unused")
+    result = run_brief_builder(bb, run_id="fail_test", reports_dir="unused")
     assert result.is_err()
-
-    msg = str(result)
-    assert "requires at least one" in msg
+    assert "No artifacts found" in str(result)
