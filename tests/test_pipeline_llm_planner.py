@@ -5,13 +5,13 @@ Integration tests for DAG-driven pipeline execution with LLM planner stubs.
 These tests verify that `run_pipeline(use_llm_planner=True)` correctly:
 1. Calls the PlannerAgent to get a custom plan.
 2. Converts that plan into a DAG.
-3. Executes agents in the EXACT order dictated by the plan (even if weird).
+3. Executes agents in the EXACT order dictated by the plan.
 4. Persists the plan spec to the blackboard.
 
 Updates
 -------
-- Updated `mock_parse` signature to accept `llm` argument (Semantic Parsing support).
-- Renamed `input_text` to `input_data` for consistency.
+- Fixed `mock_brief` signature to accept `run_id` via `**kwargs`.
+- Updated `mock_parse` signature to accept `llm` argument.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def test_pipeline_follows_custom_llm_plan() -> None:
       valid for testing DAG adherence).
     - Custom Order: parse -> timeline -> translate -> brief
     """
-    input_data = "Test input for custom planning."  # Renamed variable
+    input_data = "Test input for custom planning."
 
     # 1. Define the custom plan (The "Contract")
     custom_steps = ["parse", "timeline", "translate", "brief"]
@@ -58,30 +58,27 @@ def test_pipeline_follows_custom_llm_plan() -> None:
     execution_log: list[str] = []
 
     # 3. Define side-effect functions for the agents
-    #    These agents don't need to do real work, just log their presence
-    #    and return valid empty artifacts to keep the pipeline from crashing.
+    #    These agents don't need to do real work, just log their presence.
 
-    # Fixed: Updated signature to accept `llm` kwarg passed by the pipeline
-    # Also renamed first arg to `input_data` to match new signature types
     def mock_parse(input_data: Any, bb: Blackboard, **kwargs: Any) -> Any:
         execution_log.append("parse")
         return [{"id": "p1", "text": "stub"}]
 
     def mock_history(bb: Blackboard) -> Any:
         execution_log.append("timeline")
-        return ok([])  # Return empty Result[list[TimelineEvent]]
+        return ok([])
 
     def mock_explainer(bb: Blackboard) -> Any:
         execution_log.append("translate")
-        return ok([])  # Return empty Result[list[ExplanationCard]]
+        return ok([])
 
-    def mock_brief(bb: Blackboard) -> Any:
+    # FIX: Added **kwargs to accept 'run_id' passed by the pipeline
+    def mock_brief(bb: Blackboard, **kwargs: Any) -> Any:
         execution_log.append("brief")
         # brief_builder returns Result[Path, str]
         return ok("artifacts/reports/stub.md")
 
     # 4. Patch everything using a context manager
-    #    We patch where the objects are USED (in the pipeline module).
     with (
         patch("interlines.pipelines.public_translation.PlannerAgent") as MockPlannerCls,
         patch(
@@ -103,13 +100,12 @@ def test_pipeline_follows_custom_llm_plan() -> None:
     ):
         # Setup the Planner Stub
         mock_planner_instance = MockPlannerCls.return_value
-        # When planner.plan(...) is called, return our custom_plan
         mock_planner_instance.plan.return_value = custom_plan
 
         # 5. Run the pipeline
         result = run_pipeline(
             input_data,
-            enable_history=True,  # This is a hint, but our stub planner forces True
+            enable_history=True,
             use_llm_planner=True,  # CRITICAL: This enables the logic we are testing
         )
 
@@ -125,13 +121,9 @@ def test_pipeline_follows_custom_llm_plan() -> None:
         # B) Assert the plan spec was stored on the blackboard
         stored_plan_raw = bb.get("planner_plan_spec.initial")
         assert stored_plan_raw is not None
-
-        # Verify content matches (comparing dict representations)
         assert stored_plan_raw == custom_plan.model_dump()
-        assert stored_plan_raw["strategy"] == "custom_test_strategy"
-        assert stored_plan_raw["steps"] == custom_steps
 
-        # C) Verify the strategy label in the DAG payload on blackboard
+        # C) Verify the strategy label in the DAG payload
         dag_payload = bb.get("planner_dag")
         assert dag_payload is not None
         assert dag_payload["strategy"] == "custom_test_strategy"
