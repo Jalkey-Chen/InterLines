@@ -1,4 +1,3 @@
-# tests/test_smoke.py
 """
 Smoke tests for package structure and availability.
 
@@ -9,13 +8,7 @@ M0 | Setup & Architecture
 Scope
 -----
 These tests strictly verify that the package is installed correctly in the
-environment and that top-level modules are importable. They do not test
-functionality (that's for `test_cli.py` or `test_pipeline_*.py`).
-
-Updates
--------
-- Removed `test_cli_main_returns_zero` (legacy argparse check).
-- Added `test_cli_module_exposes_app` to verify Typer instance availability.
+environment and that top-level modules are importable.
 """
 
 from __future__ import annotations

@@ -1,11 +1,16 @@
-# tests/test_cli.py
 """
 Tests for the InterLines command-line interface (CLI).
+
+Milestone
+---------
+M6 | Interface & Deployment
+Step 6.3 | Trace Replay
 
 Scope
 -----
 These tests verify the interaction layer provided by Typer:
-1.  **Command Registration**: Ensuring `--help` works and shows correct usage.
+1.  **Command Registration**: Ensuring `--help` works and shows correct usage
+    for subcommands (`interpret`, `replay`).
 2.  **Argument Validation**: Typer's `exists=True` checks for input files.
 3.  **Pipeline Integration**: Mocking the core `run_pipeline` to ensure arguments
     are passed correctly from the CLI to the backend.
@@ -18,9 +23,9 @@ of spawning subprocesses. This keeps tests fast and platform-consistent.
 
 Updates
 -------
-- **Fix**: Removed "interpret" subcommand from invocations.
-  The CLI is running in single-command mode (e.g., `interlines file.pdf`),
-  so passing "interpret" caused it to be treated as a missing file argument.
+- **Fix**: Added "interpret" subcommand back to invocations.
+  Since we added `replay`, the CLI is now a multi-command app, so subcommands
+  are mandatory again (e.g. `interlines interpret file.pdf`).
 - **Docs**: Restored detailed docstrings and context notes.
 """
 
@@ -54,16 +59,17 @@ def test_cli_help_shows_usage(runner: CliRunner) -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0, f"Help failed: {result.output}"
     assert "InterLines" in result.output
-    # In single-command mode, the usage line usually shows the arguments directly.
-    # We check for generic usage indicators.
-    assert "Usage:" in result.output
+    # Now that we have subcommands (interpret, replay), help shows "Commands"
+    assert "Commands" in result.output
+    assert "interpret" in result.output
+    assert "replay" in result.output
 
 
 def test_interpret_fails_on_missing_file(runner: CliRunner) -> None:
     """Typer should enforce `exists=True` for the input file argument."""
     # We provide a path that definitely doesn't exist.
-    # Updated: Calling directly without 'interpret' subcommand to match single-command mode.
-    result = runner.invoke(app, ["ghost.pdf"])
+    # Updated: Calling WITH 'interpret' subcommand (Multi-Command Mode).
+    result = runner.invoke(app, ["interpret", "ghost.pdf"])
 
     # Typer returns code 2 for usage/validation errors.
     assert result.exit_code != 0
@@ -117,8 +123,8 @@ def test_interpret_happy_path(runner: CliRunner, tmp_path: Path) -> None:
     with patch("interlines.cli.run_pipeline", return_value=mock_result) as mock_run:
         # Note: We pass "n" to the "Show execution trace log?" prompt to skip it.
         # The input="n\n" simulates the user pressing 'n' then Enter.
-        # Updated: Calling directly without 'interpret' subcommand.
-        result = runner.invoke(app, [str(dummy_file)], input="n\n")
+        # Updated: Calling WITH 'interpret' subcommand (Multi-Command Mode).
+        result = runner.invoke(app, ["interpret", str(dummy_file)], input="n\n")
 
         # 4. Assertions
         # CRITICAL: We print result.output if this assertion fails!
@@ -150,8 +156,8 @@ def test_interpret_handles_pipeline_crash(runner: CliRunner, tmp_path: Path) -> 
         # Simulate a crash deep in the system (e.g. API quota exceeded)
         mock_run.side_effect = RuntimeError("LLM Out of credits")
 
-        # Updated: Calling directly without 'interpret' subcommand.
-        result = runner.invoke(app, [str(dummy_file)])
+        # Updated: Calling WITH 'interpret' subcommand (Multi-Command Mode).
+        result = runner.invoke(app, ["interpret", str(dummy_file)])
 
         # We expect exit code 1 (Application Error), NOT 2 (Usage Error).
         # 2 = Bad arguments, 1 = Runtime exception handled by our try/except block.
