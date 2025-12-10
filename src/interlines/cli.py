@@ -1,226 +1,219 @@
 # src/interlines/cli.py
-# -----------------------------------------------------------------------------
-# Step 0.4 • Commit 1/3
-# Commit: feat(cli): add argparse-based CLI with `version`, `env`, and `doctor`
-# -----------------------------------------------------------------------------
-"""InterLines command-line interface.
+"""
+InterLines Command Line Interface (CLI).
 
-This CLI intentionally uses only the Python standard library (argparse, json,
-importlib) so it remains dependency-light. It exposes three subcommands:
+Milestone
+---------
+M6 | Interface & Deployment
+Step 6.2 | CLI Experience
 
-Subcommands
------------
-- `version` : Print the installed InterLines version.
-- `env`     : Show effective configuration (INTERLINES_ENV, LOG_LEVEL, etc.).
-              Use `--json` to emit machine-readable JSON.
-- `doctor`  : Run a series of environment checks (Python version, key imports,
-              and essential env variables). Exits with code 0 on success, 1 on
-              any failure. Use `--verbose` for more details.
+This module implements the user-facing terminal interface using `typer` and `rich`.
 
-Examples
---------
-$ interlines version
-InterLines 0.0.1
-
-$ interlines env
-environment = dev
-log_level   = INFO
-openai_key  = <unset>
-
-$ interlines env --json
-{"environment":"dev","log_level":"INFO","openai_key":null}
-
-$ interlines doctor
-✓ Python >= 3.11
-✓ pydantic present
-✓ pydantic_settings present
-✓ fastapi present
-✓ INTERLINES_ENV set (dev)
-✓ LOG_LEVEL set (INFO)
-
-Design notes
-------------
-- `main(argv)` returns an exit status (int) to make tests straightforward.
-- We log only minimal information; richer logging should use the application
-  loggers created via `get_logger()` in runtime code paths.
+Updates
+-------
+- Refactored rendering logic into helper functions to reduce Cyclomatic Complexity (C901).
+- Added proper exception chaining (B904).
+- Added type ignore for Typer decorator (MyPy).
 """
 
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import json
-import os
-import platform
-import sys
-from typing import Any
+import shutil
+import time
+import traceback
+from pathlib import Path
+from typing import Annotated, Any
 
-from interlines import __version__
-from interlines.core.settings import Settings, get_logger, load_settings
+import typer
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Confirm
+
+from interlines.pipelines.public_translation import PipelineResult, run_pipeline
+
+load_dotenv()
+
+# Initialize Typer app and Rich console
+app = typer.Typer(
+    help="InterLines: Turn complex papers into accessible public briefs.",
+    rich_markup_mode="markdown",
+)
+console = Console()
 
 
-# ----- Helpers ----------------------------------------------------------------
-def _json_dumps(payload: dict[str, Any]) -> str:
-    """Serialize a dict to compact JSON with stable key order.
+def _render_brief(result: PipelineResult) -> None:
+    """Helper: Render the structured brief to the console."""
+    brief_payload = result["public_brief"]
+    title = brief_payload.get("title", "Untitled Brief")
+    summary = brief_payload.get("summary", "")
 
-    Parameters
-    ----------
-    payload : dict
-        Mapping to serialize.
+    console.rule(f"[bold]{title!s}[/bold]")
+    console.print(Markdown(str(summary)))
+    console.print("\n")
 
-    Returns
-    -------
-    str
-        Compact JSON string with sorted keys.
+    for section in brief_payload.get("sections", []):
+        heading = str(section.get("heading", "Untitled Section"))
+        raw_bullets = section.get("bullets", [])
+        # Ensure it's a list for iteration safety
+        bullets = raw_bullets if isinstance(raw_bullets, list) else []
+
+        console.print(f"[bold yellow]## {heading}[/bold yellow]")
+        for bullet in bullets:
+            console.print(f" • {bullet}")
+        console.print("")
+
+
+def _handle_file_export(result: PipelineResult, output_path: Path | None) -> None:
+    """Helper: Handle copying the artifact to a user-specified location."""
+    generated_path = result.get("public_brief_md_path")
+    final_path = generated_path
+
+    # If user requested a specific output location, copy it there
+    if output_path and generated_path:
+        try:
+            shutil.copy(generated_path, output_path)
+            final_path = str(output_path)
+            console.print(f"[dim]Copied artifact to: {output_path}[/dim]")
+        except OSError as e:
+            console.print(f"[bold red]⚠️ Failed to save to {output_path}: {e}[/bold red]")
+
+    if final_path:
+        console.print(
+            Panel(
+                f"Saved to: [link=file://{final_path}]{final_path}[/link]",
+                title="Artifact",
+                border_style="green",
+            )
+        )
+
+
+def _inspect_trace(result: PipelineResult) -> None:
+    """Helper: Interactively show the execution trace and planner report."""
+    if not Confirm.ask("Show execution trace log?", default=False):
+        return
+
+    bb = result["blackboard"]
+    console.print("\n[bold dim]Execution Trace:[/bold dim]")
+    for i, snap in enumerate(bb.traces()):
+        if snap.note:
+            console.print(f" [dim]{i+1:02d}. {snap.note}[/dim]")
+
+    report = bb.get("planner_report")
+    if report:
+        console.print("\n[bold dim]Planner Decisions:[/bold dim]")
+        # Robust way to handle dict vs Pydantic model
+        r_data: dict[str, Any] = report.model_dump() if hasattr(report, "model_dump") else report
+        strategy = r_data.get("strategy", "unknown")
+        replan = r_data.get("refine_used", False)
+        console.print(f" Strategy: [cyan]{strategy}[/cyan]")
+        console.print(f" Replan Used: [magenta]{replan}[/magenta]")
+
+
+# Fixed (MyPy): Untyped decorator workaround
+@app.command()  # type: ignore[misc]
+def interpret(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Path to the input document (PDF, DOCX, TXT).",
+        ),
+    ],
+    history: Annotated[
+        bool,
+        typer.Option(
+            "--history/--no-history",
+            "-H",
+            help="Enable Timeline/History analysis (slower but deeper).",
+        ),
+    ] = False,
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Override the default Planner model alias (e.g. 'planner').",
+        ),
+    ] = "planner",
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Custom path to save the Markdown report (e.g. 'report.md').",
+        ),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Show full error tracebacks for debugging.",
+        ),
+    ] = False,
+) -> None:
     """
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    Run the InterLines pipeline on a document.
 
-
-def _check_import(modname: str) -> bool:
-    """Return True if a module can be imported (discovered by importlib)."""
-    return importlib.util.find_spec(modname) is not None
-
-
-# ----- Subcommand implementations ---------------------------------------------
-def cmd_version(_: argparse.Namespace) -> int:
-    """Print the installed InterLines version."""
-    print(f"InterLines {__version__}")
-    return 0
-
-
-def cmd_env(ns: argparse.Namespace) -> int:
-    """Print effective configuration, optionally as JSON."""
-    # Refresh settings to reflect any env changes the caller might have set.
-    load_settings.cache_clear()
-    s: Settings = load_settings()
-
-    data: dict[str, Any] = {
-        "environment": s.environment,
-        "log_level": s.log_level,
-        "openai_key": os.environ.get("OPENAI_API_KEY") or None,
-    }
-
-    if ns.json:
-        print(_json_dumps(data))
-    else:
-        # Tab-aligned human-friendly printout.
-        env = data["environment"]
-        lvl = data["log_level"]
-        key = "<unset>" if data["openai_key"] is None else "<set>"
-        print(f"environment = {env}")
-        print(f"log_level   = {lvl}")
-        print(f"openai_key  = {key}")
-    return 0
-
-
-def cmd_doctor(ns: argparse.Namespace) -> int:
-    """Run environment checks; return 0 if all checks pass, else 1.
-
-    Checks
-    ------
-    - Python version >= 3.11
-    - Core libs importable: pydantic, pydantic_settings
-    - API libs importable (recommended): fastapi
-    - Essential env vars present (or resolvable via defaults):
-        INTERLINES_ENV, LOG_LEVEL
+    This command ingests a file, sends it through the Multi-Agent system,
+    and produces a structured public brief.
     """
-    log = get_logger("interlines.cli.doctor")
-    ok: bool = True
-
-    def good(msg: str) -> None:
-        print(f"✓ {msg}")
-
-    def bad(msg: str) -> None:
-        nonlocal ok
-        ok = False
-        print(f"✗ {msg}")
-
-    # Python version
-    py_ok = sys.version_info >= (3, 11)
-    (good if py_ok else bad)(f"Python >= 3.11 (detected {platform.python_version()})")
-
-    # Imports
-    for mod in ("pydantic", "pydantic_settings", "fastapi"):
-        present = _check_import(mod)
-        (good if present else bad)(f"{mod} present")
-
-    # Settings / env vars
-    load_settings.cache_clear()
-    s = load_settings()
-    if s.environment:
-        good(f"INTERLINES_ENV set ({s.environment})")
-    else:
-        bad("INTERLINES_ENV missing")
-
-    if s.log_level:
-        good(f"LOG_LEVEL set ({s.log_level})")
-    else:
-        bad("LOG_LEVEL missing")
-
-    if ns.verbose:
-        log.info("doctor: settings=%s", {"env": s.environment, "level": s.log_level})
-
-    return 0 if ok else 1
-
-
-# ----- Parser construction -----------------------------------------------------
-def _build_parser() -> argparse.ArgumentParser:
-    """Construct the top-level argparse parser and subparsers.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser configured with subcommands: version, env, doctor.
-    """
-    parser = argparse.ArgumentParser(
-        prog="interlines",
-        description="InterLines CLI — utilities for local development and diagnostics.",
+    # 1. Welcome Banner
+    console.print(
+        Panel.fit(
+            f"[bold cyan]InterLines CLI[/bold cyan]\nProcessing: [u]{file.name}[/u]",
+            border_style="cyan",
+        )
     )
-    sub = parser.add_subparsers(dest="command", required=True)
 
-    # version
-    p_ver = sub.add_parser("version", help="Print the installed InterLines version.")
-    p_ver.set_defaults(func=cmd_version)
+    start_time = time.time()
+    result: PipelineResult | None = None
 
-    # env
-    p_env = sub.add_parser("env", help="Show effective InterLines configuration.")
-    p_env.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of human-friendly text.",
-    )
-    p_env.set_defaults(func=cmd_env)
+    # 2. Pipeline Execution (with Spinner)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Initializing agents...", total=None)
+            time.sleep(0.5)
 
-    # doctor
-    p_doc = sub.add_parser("doctor", help="Run environment checks.")
-    p_doc.add_argument("--verbose", action="store_true", help="Print additional details.")
-    p_doc.set_defaults(func=cmd_doctor)
+            progress.update(task, description=f"[yellow]Planner ({model}) is thinking...")
 
-    return parser
+            # We assume input_data handles Path objects via ParserAgent
+            result = run_pipeline(
+                input_data=file,
+                enable_history=history,
+                use_llm_planner=True,
+            )
 
+            progress.update(task, description="[green]Finalizing artifacts...")
+            time.sleep(0.5)
 
-# ----- Entry point -------------------------------------------------------------
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for `interlines`.
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Pipeline Error:[/bold red] {e}")
+        if verbose:
+            traceback.print_exc()
+        # Fixed (B904): Use 'from e' to preserve exception chain
+        raise typer.Exit(code=1) from e
 
-    Parameters
-    ----------
-    argv : Optional[list[str]]
-        Argument vector; if None, defaults to `sys.argv[1:]`.
+    duration = time.time() - start_time
+    console.print(f"\n[bold green]✅ Complete![/bold green] (took {duration:.1f}s)\n")
 
-    Returns
-    -------
-    int
-        Exit status code (0 success, non-zero on errors).
-    """
-    parser = _build_parser()
-    ns = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    func = getattr(ns, "func", None)
-    if func is None:
-        parser.print_help()
-        return 2
-    return int(func(ns))
+    if result:
+        # Delegate logic to helper functions (Reducing Complexity C901)
+        _render_brief(result)
+        _handle_file_export(result, output)
+        _inspect_trace(result)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

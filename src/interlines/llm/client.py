@@ -74,7 +74,7 @@ class LLMClient:
     api_key: str
     base_url: str
     default_model_alias: str = DEFAULT_ALIAS
-    timeout_seconds: float = 60.0  # Increased default for slower reasoning models
+    timeout_seconds: float = 300.0  # Increased default for slower reasoning models
 
     # --------------------------------------------------------------------- #
     # Constructors

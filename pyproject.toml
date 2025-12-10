@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "InterLines Team" }]
 license = { text = "GNU GPL" }
-scripts = { interlines = "interlines.cli:main", "interlines-api" = "interlines.api.server:run" }
+scripts = { interlines = "interlines.cli:app", "interlines-api" = "interlines.api.server:main" }
 
 # NEW in Step 0.2: runtime dependencies for typed settings
 dependencies = [
@@ -20,6 +20,8 @@ dependencies = [
   "requests>=2.32.5",
   "uvicorn>=0.38.0",
   "pdfminer-six>=20251107",
+  "typer>=0.20.0",
+  "rich>=14.2.0",
 ]
 
 [tool.uv]

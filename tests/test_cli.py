@@ -1,71 +1,164 @@
-"""Tests for the InterLines command-line interface (CLI).
+# tests/test_cli.py
+"""
+Tests for the InterLines command-line interface (CLI).
 
-These tests call `interlines.cli.main(argv)` directly to avoid spawning a
-subprocess, which keeps them fast and platform-consistent in CI.
-
-What we verify
---------------
-1) `version` prints the installed package version and returns exit code 0.
-2) `env --json` returns a stable JSON object with required keys and values
-   reflecting environment overrides after cache clear.
-3) `doctor` returns exit code 0 when the development environment is set up
-   (Python >= 3.11, core libs importable, essential env vars present).
-
-Notes
+Scope
 -----
-- We annotate pytest fixtures as `Any` to satisfy `mypy --strict` without adding
-  extra typing stubs for pytest. Test functions themselves are annotated with
-  `-> None` per project typing rules.
+These tests verify the interaction layer provided by Typer:
+1.  **Command Registration**: Ensuring `--help` works and shows correct usage.
+2.  **Argument Validation**: Typer's `exists=True` checks for input files.
+3.  **Pipeline Integration**: Mocking the core `run_pipeline` to ensure arguments
+    are passed correctly from the CLI to the backend.
+4.  **Error Handling**: Verifying graceful exit codes on failures.
+
+Test Strategy
+-------------
+We use `typer.testing.CliRunner` to invoke the app in-process, avoiding the overhead
+of spawning subprocesses. This keeps tests fast and platform-consistent.
+
+Updates
+-------
+- **Fix**: Removed "interpret" subcommand from invocations.
+  The CLI is running in single-command mode (e.g., `interlines file.pdf`),
+  so passing "interpret" caused it to be treated as a missing file argument.
+- **Docs**: Restored detailed docstrings and context notes.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from interlines import __version__ as PKG_VERSION
-from interlines.cli import main
+import pytest
+from typer.testing import CliRunner
 
-
-def test_cli_version_prints_version(capsys: Any) -> None:
-    """`interlines version` should print the package version and exit 0."""
-    rc = main(["version"])
-    captured = capsys.readouterr().out.strip()
-    assert rc == 0
-    assert captured == f"InterLines {PKG_VERSION}"
+from interlines.cli import app
 
 
-def test_cli_env_json_reflects_env_overrides(monkeypatch: Any, capsys: Any) -> None:
-    """`interlines env --json` should emit overrides from environment variables.
-
-    We set `INTERLINES_ENV=test` and `LOG_LEVEL=DEBUG`, then assert the JSON payload
-    includes those values and the canonical keys.
+# Fixed (MyPy): Added type ignore to silence "Untyped decorator" error.
+# This prevents MyPy from complaining that the fixture makes the function untyped.
+@pytest.fixture  # type: ignore[misc]
+def runner() -> CliRunner:
     """
-    monkeypatch.setenv("INTERLINES_ENV", "test")
-    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
-    # OPENAI_API_KEY is optional; set to ensure deterministic output shape
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-xxx")
+    Create a fresh CliRunner for each test.
 
-    rc = main(["env", "--json"])
-    out = capsys.readouterr().out.strip()
-
-    assert rc == 0
-    payload = json.loads(out)
-    assert isinstance(payload, dict)
-    # Required keys and values
-    assert payload["environment"] == "test"
-    assert payload["log_level"] == "DEBUG"
-    # We expose the presence of key via JSON; value should be non-null here
-    assert payload["openai_key"] is not None
-
-
-def test_cli_doctor_exits_zero(monkeypatch: Any) -> None:
-    """`interlines doctor` should succeed in a dev/test environment.
-
-    We ensure minimal env presence and expect a zero exit status. Detailed text
-    output is not asserted because it may vary slightly across platforms.
+    This ensures that the internal state of Click/Typer logic is isolated
+    between tests, preventing 'Exit Code 2' (Usage Error) false positives
+    that can occur when reusing a global runner.
     """
-    monkeypatch.setenv("INTERLINES_ENV", "test")
-    monkeypatch.setenv("LOG_LEVEL", "INFO")
-    rc = main(["doctor"])
-    assert rc == 0
+    return CliRunner()
+
+
+def test_cli_help_shows_usage(runner: CliRunner) -> None:
+    """Invoking --help should print usage instructions and exit 0."""
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0, f"Help failed: {result.output}"
+    assert "InterLines" in result.output
+    # In single-command mode, the usage line usually shows the arguments directly.
+    # We check for generic usage indicators.
+    assert "Usage:" in result.output
+
+
+def test_interpret_fails_on_missing_file(runner: CliRunner) -> None:
+    """Typer should enforce `exists=True` for the input file argument."""
+    # We provide a path that definitely doesn't exist.
+    # Updated: Calling directly without 'interpret' subcommand to match single-command mode.
+    result = runner.invoke(app, ["ghost.pdf"])
+
+    # Typer returns code 2 for usage/validation errors.
+    assert result.exit_code != 0
+    # FIX: Validation errors go to stderr, so we must check .output (mixed)
+    # instead of .stdout, otherwise this assertion fails on an empty string.
+    assert "does not exist" in result.output
+
+
+def test_interpret_happy_path(runner: CliRunner, tmp_path: Path) -> None:
+    """
+    Verify the happy path where the pipeline runs successfully.
+
+    We mock `run_pipeline` to avoid actual LLM calls and return a
+    valid result structure to ensure the rendering logic (Rich) works.
+    """
+    # 1. Create a dummy file so Typer validation passes
+    dummy_file = tmp_path / "paper.pdf"
+    dummy_file.write_text("dummy content", encoding="utf-8")
+
+    # 2. Mock the pipeline result (TypedDict structure)
+    # Define complex mocks first to satisfy type checkers and prevent
+    # "object has no attribute" errors in MyPy when accessing nested items.
+    mock_bb = MagicMock()
+    # Mock traces to return empty list to avoid iteration errors in CLI inspector
+    mock_bb.traces.return_value = []
+    # Mock get() to return None (simulating no planner report present)
+    mock_bb.get.return_value = None
+
+    mock_result = {
+        "blackboard": mock_bb,
+        "public_brief": {
+            "title": "Mock Brief",
+            "summary": "This is a summary.",
+            "sections": [
+                {
+                    "heading": "Key Findings",
+                    "bullets": ["Point A", "Point B"],
+                }
+            ],
+        },
+        "public_brief_md_path": "/tmp/mock_output.md",
+        "parsed_chunks": [],
+        "explanations": [],
+        "relevance_notes": [],
+        "terms": [],
+        "timeline_events": [],
+    }
+
+    # 3. Patch and Run
+    # We patch the core pipeline entrypoint to inject our mock result.
+    with patch("interlines.cli.run_pipeline", return_value=mock_result) as mock_run:
+        # Note: We pass "n" to the "Show execution trace log?" prompt to skip it.
+        # The input="n\n" simulates the user pressing 'n' then Enter.
+        # Updated: Calling directly without 'interpret' subcommand.
+        result = runner.invoke(app, [str(dummy_file)], input="n\n")
+
+        # 4. Assertions
+        # CRITICAL: We print result.output if this assertion fails!
+        # This helps debug "Exit Code 2" errors by showing the actual Typer error message.
+        assert result.exit_code == 0, f"CLI Failed with Output:\n{result.output}"
+
+        assert "Complete!" in result.output
+        assert "Mock Brief" in result.output  # Verify Rich rendering of title
+        assert "Key Findings" in result.output  # Verify Rich rendering of sections
+
+        # Verify arguments passed to core logic
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args.kwargs
+
+        # We passed a path string to CLI, Typer converts to Path, Pipeline gets Path
+        assert isinstance(call_kwargs["input_data"], Path)
+        assert call_kwargs["input_data"].name == "paper.pdf"
+        # Verify default options
+        assert call_kwargs["enable_history"] is False
+        assert call_kwargs["use_llm_planner"] is True
+
+
+def test_interpret_handles_pipeline_crash(runner: CliRunner, tmp_path: Path) -> None:
+    """Ensure exceptions in the pipeline are caught and displayed nicely."""
+    dummy_file = tmp_path / "paper.pdf"
+    dummy_file.write_text("dummy")
+
+    with patch("interlines.cli.run_pipeline") as mock_run:
+        # Simulate a crash deep in the system (e.g. API quota exceeded)
+        mock_run.side_effect = RuntimeError("LLM Out of credits")
+
+        # Updated: Calling directly without 'interpret' subcommand.
+        result = runner.invoke(app, [str(dummy_file)])
+
+        # We expect exit code 1 (Application Error), NOT 2 (Usage Error).
+        # 2 = Bad arguments, 1 = Runtime exception handled by our try/except block.
+        assert (
+            result.exit_code == 1
+        ), f"Expected crash (1), got {result.exit_code}. Output:\n{result.output}"
+
+        # Verify the user sees a friendly error message, not just a raw traceback.
+        assert "Pipeline Error" in result.output
+        assert "LLM Out of credits" in result.output
