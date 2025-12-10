@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" alt="InterLines Logo" width="200" height="auto" />
+<!--<img src="docs/assets/logo.png" alt="InterLines Logo" width="200" height="auto" />-->
 
 # InterLines
 
@@ -158,6 +158,58 @@ Want to debug a run without spending API tokens? Replay a saved trace file.
 uv run interlines replay artifacts/runs/20251209_xxxx_paper.json
 ```
 
+### Demo
+<img src="docs/assets/screenshot.png" alt="InterLines CLI screenshot" width="auto" height="auto"
+
+-----
+
+## 📂 Included Examples
+
+InterLines comes with two fully processed examples — a technical paper and a public policy plan — so you can explore the outputs without running the pipeline yourself.
+
+### 📝 Sample Public Briefs (Markdown)
+
+- [Americas AI Action Plan](examples/briefs/Americas%20AI%20Action%20Plan.md)  
+  *A public-policy oriented brief summarizing the strategic goals and implications of the Americas AI Action Plan.*
+
+- [Natively Sparse Attention](examples/briefs/Natively%20Sparse%20Attention.md)  
+  *A technical brief explaining NSA, a hierarchical sparse attention mechanism for LLMs.*
+
+You can view these directly on GitHub or download them as Markdown/PDF.
+
+### 📜 Execution Traces (JSON)
+
+Each run also includes a full trace containing planner decisions, agent outputs, and intermediate artifacts:
+
+- [Trace: Native Sparse Attention](examples/trace/20251209_225432_Native_Sparse_Attention.json)
+- [Trace: Americas AI Action Plan](examples/trace/20251209_230043_Americas-AI-Action-Plan.json)
+
+These trace files are useful for:
+
+- Debugging agent behavior  
+- Understanding planner decisions  
+- Research on multi-agent interpretability  
+- Reproducing full execution states  
+
+### 📜 Execution Traces (for debugging & research)
+
+For each brief, InterLines also stores a full trace of the multi-agent run:
+
+- `examples/trace/20251209_225432_Native_Sparse_Attention.json`
+- `examples/trace/20251209_230043_Americas-AI-Action-Plan.json`
+
+Each trace JSON contains:
+
+- Planner decisions (strategy, phases, re-plans)
+- All intermediate cards (Explanation, Jargon, Citizen, History, Review)
+- Timing information and model metadata
+
+These traces are useful if you want to:
+
+- Inspect how the system arrived at a particular explanation
+- Compare different prompt/model settings
+- Build evaluation pipelines or research on multi-agent LLM systems
+
 -----
 
 ## 🛠️ Advanced: API Server
@@ -189,11 +241,97 @@ We separate content into layers for different audiences:
 
 ## 🗺️ Roadmap
 
-  - [x] **M5: Refinement Loop** (Self-correcting Editor-Planner cycle)
-  - [x] **M6: Trace Replay & CLI** (Flight recorder for debugging)
-  - [ ] **M7: Web Dashboard** (React-based visualization of the Blackboard)
-  - [ ] **M8: Human-in-the-loop** (Allow users to approve/reject Plans)
-  - [ ] **M9: Multi-modal Support** (Reading charts and diagrams from PDFs)
+### ✅ **M5: Refinement Loop** — *Self-correcting Editor–Planner cycle*
+
+The system gains the ability to reflect on its own outputs using an Editor–Planner feedback loop.
+
+* Multi-pass revisions of explanations, timelines, and term cards
+* Automatic detection of missing provenance, weak chains of reasoning, and stylistic inconsistency
+* Adaptive planning: Planner rewrites the task graph based on Editor’s critiques
+* Produces significantly more reliable Public Briefs
+
+### ✅ **M6: Trace Replay & CLI** — *“Flight recorder” for debugging & reproducibility*
+
+A full snapshot of every agent’s reasoning is recorded and can be replayed.
+
+* Deterministic re-generation of outputs for audits
+* Step-by-step view of agent decisions and intermediate cards
+* CLI-based time-travel debugging (`interlines replay <run_id>`)
+* Essential for research settings and model evaluation
+
+
+### 🛠️ **M7: Web Dashboard** — *Visual interface for the Blackboard ecosystem*
+
+A React/Vite-based dashboard that visualizes the internal machinery of InterLines.
+
+* Live DAG view of the Planner (nodes = agents, edges = dependencies)
+* Blackboard visualization showing evolving artifacts
+* Timeline animations for HistoryAgent outputs
+* Compare multiple runs side-by-side
+* User-friendly portal for demos and educational use
+
+
+### 🧩 **M8: Human-in-the-loop** — *Collaborative sensemaking workflow*
+
+Allows researchers, journalists, and policy analysts to participate in the reasoning loop.
+
+* Editable cards: Users can rewrite Explanation or Timeline cards
+* Approval/rejection of agent plans
+* Optional constraints (“don’t oversimplify”, “cite more empirical evidence”)
+* Human corrections propagate through DAG → downstream agents re-compute
+
+
+### 🖼️ **M9: Multi-modal Support** — *Understanding diagrams, charts, and structured figures*
+
+InterLines becomes capable of interpreting visual information from academic PDFs.
+
+* Chart recognition (axes, labels, slope direction, statistical claims)
+* Diagram understanding: pipelines, flow charts, conceptual figures
+* Extraction of quantitative data from tables and plots
+* Enables the system to handle real scientific papers end-to-end
+
+
+### 🎛️ **M10: Multi-Document Synthesis** — *Building a unified narrative from many sources*
+
+InterLines learns to read *sets* of papers/policies and generate integrated briefs.
+
+* Cross-document evidence clustering
+* Contradiction detection and argument alignment
+* Automatically generated “literature map” + timeline of field evolution
+* Perfect for research surveys, policy syntheses, and course materials
+
+
+### 🧱 **M11: Knowledge Graph Integration** — *Stable, persistent memory for concepts & citations*
+
+A structured knowledge layer complements the agent system.
+
+* Terminology normalization across papers
+* Auto-citation linking to original sources
+* Concept–event–claim graph for scientific fields
+* Ensures consistency: definitions stay stable across runs
+
+
+### 🖼️✨ **M12: PosterBuilder — Automated Academic Poster Generation**
+
+*(Your ultimate vision — system-generated conference posters)*
+InterLines becomes capable of producing full academic posters (like NeurIPS/ICLR sessions).
+
+* Converts a Public Brief into a poster layout
+* Dynamic templates:
+
+  * 3-column research posters
+  * Data-rich policy posters
+  * Minimalist design styles (IEEE/ACM formats)
+* Auto-selects figures, tables, and timelines
+* Generates vector graphics (SVG/PDF)
+* Supports theme customization: color palettes, institution branding
+* Optional agent: **VisualNarrator**
+
+  * Designs schematics
+  * Generates illustrative diagrams
+  * Summarizes methods visually (flowcharts, box diagrams)
+
+This milestone turns InterLines into a full **scientific communication engine**, not just a text-based explainer.
 
 -----
 
