@@ -74,7 +74,7 @@ class LLMClient:
     api_key: str
     base_url: str
     default_model_alias: str = DEFAULT_ALIAS
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 60.0  # Increased default for slower reasoning models
 
     # --------------------------------------------------------------------- #
     # Constructors
@@ -256,12 +256,28 @@ class LLMClient:
 
         url = base_url + "/chat/completions"
 
+        # --- Reasoning Model Logic (FIX ADDED HERE) ---
+        # OpenAI "o1" / "o3" series (and gpt-5.1 per error logs) require:
+        # 1. `max_completion_tokens` instead of `max_tokens`.
+        # 2. No `temperature` parameter (it is fixed).
+        is_reasoning_model = (
+            config.name.startswith("o1") or config.name.startswith("o3") or config.name == "gpt-5.1"
+        )
+
         payload: MutableMapping[str, Any] = {
             "model": config.name,
             "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            # Note: We conditionally add temp/max_tokens below
         }
+
+        if is_reasoning_model:
+            # Use the new parameter name for reasoning models
+            payload["max_completion_tokens"] = max_tokens
+            # Do NOT send 'temperature' as it causes 400 errors for these models.
+        else:
+            # Standard models use the legacy parameters
+            payload["max_tokens"] = max_tokens
+            payload["temperature"] = temperature
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -368,10 +384,18 @@ class LLMClient:
             cannot be decoded as JSON.
         """
         body = json.dumps(payload).encode("utf-8")
+
+        # Fix: Inject a "browser-like" or custom User-Agent to prevent
+        # 403 Forbidden (Cloudflare Error 1010) when calling providers
+        # like DeepSeek or xAI.
+        final_headers = dict(headers)
+        if "User-Agent" not in final_headers:
+            final_headers["User-Agent"] = "InterLines-Client/0.6.0"
+
         request = urllib.request.Request(
             url=url,
             data=body,
-            headers=dict(headers),
+            headers=final_headers,
             method="POST",
         )
 
@@ -420,6 +444,7 @@ class LLMClient:
         """
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
+            # Handle empty choices (possible in some streaming/error scenarios)
             raise RuntimeError("LLM response has no choices; cannot extract content.")
 
         first = choices[0]
@@ -428,8 +453,12 @@ class LLMClient:
             raise RuntimeError("LLM response choice[0].message is missing or invalid.")
 
         content = message.get("content")
-        if not isinstance(content, str) or not content:
-            raise RuntimeError("LLM response choice[0].message.content is empty.")
+        # Handle reasoning models returning None for content while thinking
+        if content is None:
+            return ""
+
+        if not isinstance(content, str):
+            raise RuntimeError("LLM response choice[0].message.content is not a string.")
 
         return content
 

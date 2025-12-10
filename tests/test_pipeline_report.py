@@ -1,3 +1,4 @@
+# tests/test_pipeline_report.py
 """
 Integration tests for Planner Reporting and Observability (Step 5.4).
 
@@ -41,7 +42,7 @@ from interlines.pipelines.public_translation import run_pipeline
 
 
 def _stub_agents_and_run(
-    input_text: str,
+    input_data: str,  # Renamed from input_text
     *,
     use_llm_planner: bool,
     mock_planner_instance: MagicMock | None = None,
@@ -52,7 +53,7 @@ def _stub_agents_and_run(
 
     Parameters
     ----------
-    input_text:
+    input_data:
         The raw input text for the pipeline.
     use_llm_planner:
         Passed through to ``run_pipeline``.
@@ -133,7 +134,7 @@ def _stub_agents_and_run(
 
         # 4. Execute
         res = run_pipeline(
-            input_text,
+            input_data=input_data,  # Updated parameter name
             enable_history=False,
             use_llm_planner=use_llm_planner,
         )
@@ -151,7 +152,7 @@ def test_report_generated_for_rule_based_plan() -> None:
     - Trace logs should confirm the report was written.
     """
     bb = _stub_agents_and_run(
-        "Rule based test",
+        input_data="Rule based test",
         use_llm_planner=False,
     )
 
@@ -234,7 +235,7 @@ def test_report_generated_for_llm_replan() -> None:
 
     # --- Run Pipeline ---
     bb = _stub_agents_and_run(
-        "LLM replan test",
+        input_data="LLM replan test",
         use_llm_planner=True,
         mock_planner_instance=mock_planner,
         mock_editor_return=low_score_report,

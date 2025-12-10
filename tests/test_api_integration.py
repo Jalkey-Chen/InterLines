@@ -18,6 +18,10 @@ Scenarios
 1. **Health Check**: Verify service is up.
 2. **Happy Path**: Submit -> 202 -> Poll (Pending) -> Poll (Completed).
 3. **Error Handling**: Verify 404s for missing jobs.
+
+Updates
+-------
+- Adjusted assertions to match the `run_pipeline(input_data=...)` signature.
 """
 
 from __future__ import annotations
@@ -131,7 +135,9 @@ def test_submit_and_poll_flow(client: TestClient) -> None:
         # Verify our mock was called with correct args
         mock_run.assert_called_once()
         call_kwargs = mock_run.call_args.kwargs
-        assert call_kwargs["input_text"] == payload["text"]
+
+        # ✅ Fixed: Assert 'input_data' instead of 'input_text' to match core pipeline refactor
+        assert call_kwargs["input_data"] == payload["text"]
         assert call_kwargs["enable_history"] is False
 
 
@@ -149,8 +155,8 @@ def test_pipeline_failure_handling(client: TestClient) -> None:
     with patch("interlines.api.background.run_pipeline") as mock_run:
         mock_run.side_effect = RuntimeError("Simulated Pipeline Crash")
 
-        # Submit
-        resp = client.post("/interpret", json={"text": "Crash me please, make it longer"})
+        # Submit (using text > 10 chars to pass Pydantic validation)
+        resp = client.post("/interpret", json={"text": "Crash me please, make it longer."})
         assert resp.status_code == 202
         job_id = resp.json()["job_id"]
 

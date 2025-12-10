@@ -28,7 +28,7 @@ from interlines.pipelines.public_translation import (
 
 
 def _run_pipeline_with_stubbed_agents(  # noqa: C901
-    input_text: str,
+    input_data: str,  # Renamed from input_text
     *,
     enable_history: bool,
 ) -> PipelineResult:
@@ -177,7 +177,8 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
         mod_any.PlannerAgent = FakePlannerAgent
 
         # Run the real pipeline implementation with our fake agents.
-        return run_pipeline(input_text, enable_history=enable_history)
+        # Updated to use input_data
+        return run_pipeline(input_data=input_data, enable_history=enable_history)
     finally:
         # Restore original functions so that other tests are not affected.
         mod_any.run_explainer = orig_run_explainer
@@ -191,7 +192,7 @@ def _run_pipeline_with_stubbed_agents(  # noqa: C901
 
 def test_run_pipeline_with_history_produces_artifacts() -> None:
     """Full pipeline run (with history) should produce core artifacts."""
-    input_text = (
+    input_data = (  # Renamed from input_text
         "InterLines turns expert language into public language. "
         "It also provides a historical lens over time. "
         "Agents collaborate through a shared blackboard to build layered "
@@ -199,7 +200,7 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
     )
 
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
-        input_text,
+        input_data,
         enable_history=True,
     )
 
@@ -237,17 +238,16 @@ def test_run_pipeline_with_history_produces_artifacts() -> None:
 
     # Markdown path: a non-empty string produced by the brief builder.
     md_path = result["public_brief_md_path"]
-    # This assertion was failing because md_path was None
     assert isinstance(md_path, str), "md_path should be a string, not None"
     assert md_path.endswith("-stub.md")
 
 
 def test_run_pipeline_without_history_skips_timeline() -> None:
     """When ``enable_history=False``, the history branch should be skipped."""
-    input_text = "Short text for a non-history run."
+    input_data = "Short text for a non-history run."
 
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
-        input_text,
+        input_data,
         enable_history=False,
     )
 
@@ -263,9 +263,9 @@ def test_run_pipeline_without_history_skips_timeline() -> None:
 
 def test_pipeline_records_planner_dag_and_trace() -> None:
     """Planner DAG payload and trace snapshot should be recorded."""
-    input_text = "Trace and planner DAG test."
+    input_data = "Trace and planner DAG test."
     result: PipelineResult = _run_pipeline_with_stubbed_agents(
-        input_text,
+        input_data,
         enable_history=True,
     )
     bb = result["blackboard"]

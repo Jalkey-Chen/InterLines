@@ -1,3 +1,4 @@
+# src/interlines/api/background.py
 """
 Background Task Runner for the Analysis Pipeline.
 
@@ -10,13 +11,9 @@ This module provides the worker function used by FastAPI's `BackgroundTasks`.
 It wraps the synchronous `run_pipeline` call with exception handling and
 state management logic.
 
-Responsibilities
-----------------
-- **Execution**: Invoke the core `run_pipeline` with provided arguments.
-- **State Transition**: Update the global `JobStore` based on the outcome:
-  - On Success: JobStatus.COMPLETED + Result payload.
-  - On Failure: JobStatus.FAILED + Error message.
-- **Isolation**: Ensure pipeline crashes do not bring down the API server.
+Updates
+-------
+- Updated `run_pipeline` call to use the new `input_data` argument signature.
 """
 
 from __future__ import annotations
@@ -61,7 +58,9 @@ def run_pipeline_task(
         # This is a synchronous call that may take 10-60 seconds.
         # It handles all internal agent interactions and blackboard writes.
         pipeline_output = run_pipeline(
-            input_text=text,
+            # Fixed: Updated argument name from 'input_text' to 'input_data'
+            # to match the refactored pipeline signature.
+            input_data=text,
             enable_history=enable_history,
             use_llm_planner=use_llm_planner,
         )
