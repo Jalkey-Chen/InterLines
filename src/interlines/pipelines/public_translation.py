@@ -280,14 +280,14 @@ def _execute_step(
         explainer_res = run_explainer(bb)
         cards = _unwrap_or_fail("explainer_agent", explainer_res)
         bb.put(_EXPLANATIONS_KEY, [_artifact_to_dict(c) for c in cards])
-        bb.trace(f"pipeline: step '{step}' finished")
+        bb.trace(f"step '{step}' finished")
 
     elif step in ("narrate", "citizen_refine"):
         # "narrate" = Initial Pass; "citizen_refine" = Replan Pass
         citizen_res = run_citizen(bb)
         notes = _unwrap_or_fail("citizen_agent", citizen_res)
         bb.put(_RELEVANCE_NOTES_KEY, [_artifact_to_dict(n) for n in notes])
-        bb.trace(f"pipeline: step '{step}' finished")
+        bb.trace(f"step '{step}' finished")
 
     elif step in ("jargon", "jargon_refine"):
         jargon_res = run_jargon(bb)
@@ -303,14 +303,14 @@ def _execute_step(
         # "review" = Initial Pass; "editor" = Re-verification Pass
         editor_res = run_editor(bb)
         _unwrap_or_fail("editor_agent", editor_res)
-        bb.trace(f"pipeline: step '{step}' finished")
+        bb.trace(f"step '{step}' finished")
 
     elif step == "brief":
         # Final Sink: Generate Markdown Report
         brief_res = run_brief_builder(bb, run_id="latest")
         path = _unwrap_or_fail("brief_builder_agent", brief_res)
         print(f"   [Pipeline] Brief generated at: {path}")
-        bb.trace("pipeline: step 'brief' finished")
+        bb.trace("step 'brief' finished")
 
     else:
         print(f"   [WARN] Unknown step '{step}', skipping.")
@@ -517,6 +517,8 @@ def run_pipeline(
         notes=plan_spec.notes,
     )
     bb.put(_PLANNER_REPORT_KEY, plan_report.model_dump())
+    # --- FIX: Add the trace that tests were failing on ---
+    bb.trace("planner: report written")
 
     # Build final API payload
     cards = cast("list[ExplanationCard]", _as_list(bb.get(_EXPLANATIONS_KEY)))
