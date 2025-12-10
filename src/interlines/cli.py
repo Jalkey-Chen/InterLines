@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -32,6 +33,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
 from interlines.pipelines.public_translation import PipelineResult, run_pipeline
+
+load_dotenv()
 
 # Initialize Typer app and Rich console
 app = typer.Typer(
