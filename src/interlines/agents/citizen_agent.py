@@ -7,6 +7,12 @@ colloquial "why it matters" notes for different audiences.
 It writes a list of :class:`RelevanceNote` instances back to the
 blackboard under the ``"relevance_notes"`` key and returns them wrapped
 in a :class:`Result`.
+
+Updates
+-------
+- Added robust JSON parsing with graceful fallback: if the LLM returns
+  malformed data, the agent now returns a placeholder note instead of
+  crashing the entire pipeline.
 """
 
 from __future__ import annotations
@@ -186,19 +192,74 @@ def _note_from_json(node: Any) -> RelevanceNote | None:
     )
 
 
+def _clean_json_text(raw: str) -> str:
+    """
+    Heuristically extract the JSON object from a potentially chatty LLM response.
+
+    1. Strips Markdown code fences (```json ... ```).
+    2. Finds the substring between the first '{' and the last '}'.
+    """
+    text = raw.strip()
+
+    # 1. Remove Markdown fences
+    if text.startswith("```"):
+        # Locate the first newline to skip "```json"
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline:].strip()
+        # Remove trailing fence
+        if text.endswith("```"):
+            text = text[:-3].strip()
+
+    # 2. Extract JSON object substring
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
+    return text
+
+
+def _create_fallback_note(reason: str) -> RelevanceNote:
+    """Create a placeholder note when generation fails."""
+    return RelevanceNote(
+        kind="relevance.v1",
+        version="1.0.0",
+        confidence=0.0,
+        target="System Message",
+        rationale=f"Relevance analysis unavailable: {reason}",
+        score=0.0,
+    )
+
+
 def _parse_notes_json(raw: str) -> Result[list[RelevanceNote], str]:
-    """Parse the LLM JSON payload into :class:`RelevanceNote` objects."""
+    """Parse the LLM JSON payload into :class:`RelevanceNote` objects.
+
+    Includes aggressive cleaning and a graceful fallback strategy.
+    """
+    # Clean the input before parsing to handle Markdown/chatty models.
+    cleaned_json = _clean_json_text(raw)
+
+    if not cleaned_json:
+        # Fallback 1: Empty output (LLM refused or failed silently)
+        print("   [WARN] Citizen agent received empty JSON. Using fallback.")
+        return ok([_create_fallback_note("LLM returned no usable JSON content.")])
+
     try:
-        payload: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return err(f"Citizen agent could not parse LLM JSON: {exc}")
+        payload: Any = json.loads(cleaned_json)
+    except json.JSONDecodeError:
+        # Fallback 2: Malformed JSON
+        # Instead of crashing the pipeline, we return a warning note.
+        print("   [WARN] Citizen agent JSON decode failed. Using fallback.")
+        return ok([_create_fallback_note("LLM response could not be parsed.")])
 
     if not isinstance(payload, Mapping):
-        return err("Citizen agent expected JSON object as root.")
+        return ok([_create_fallback_note("LLM response was not a JSON object.")])
 
     notes_field = payload.get("notes", [])
     if not isinstance(notes_field, list):
-        return err("Citizen agent expected 'notes' to be a list in the JSON output.")
+        return ok([_create_fallback_note("LLM response missing 'notes' list.")])
 
     notes: list[RelevanceNote] = []
     for item in notes_field:
@@ -207,7 +268,7 @@ def _parse_notes_json(raw: str) -> Result[list[RelevanceNote], str]:
             notes.append(note)
 
     if not notes:
-        return err("Citizen agent produced no usable relevance notes.")
+        return ok([_create_fallback_note("LLM produced no valid notes.")])
 
     return ok(notes)
 
@@ -236,9 +297,11 @@ def run_citizen(
         return err(llm_result.unwrap_err())
     raw = llm_result.unwrap()
 
-    # 3) Parse notes JSON.
+    # 3) Parse notes JSON (with fallback).
     notes_result = _parse_notes_json(raw)
     if notes_result.is_err():
+        # This path is now rare due to fallback logic above,
+        # but kept for catastrophic internal errors.
         return err(notes_result.unwrap_err())
     notes = notes_result.unwrap()
 
