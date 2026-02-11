@@ -16,7 +16,7 @@ Built for transparency, auditability, and responsible synthesis —
 **not** opaque, single-pass text generation.
 
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Dependency Manager](https://img.shields.io/badge/uv-managed-purple)](https://github.com/astral-sh/uv)
 
@@ -370,6 +370,6 @@ Please read `docs/CONTRIBUTING.md` before opening a PR.
 
 ## 📜 License
 
-Distributed under **GPLv3**.
+Distributed under the **Apache License 2.0**.  
 See `LICENSE` for details.
 
